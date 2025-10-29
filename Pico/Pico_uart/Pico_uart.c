@@ -41,7 +41,6 @@ struct repeating_timer timer;
 const uint8_t SYNC_BYTE_1 = 0xAA;
 const uint8_t SYNC_BYTE_2 = 0x55;
 
-
 // --- DADOS MUSICAIS ---
 // Usado para tocar uma melodia em um buzzer (usando PWM para mudar a frequência de saída), não para simular o stream de samples de um sinal de áudio
 const uint melody_notes[] = {  // Frequencias das notas em Hz
