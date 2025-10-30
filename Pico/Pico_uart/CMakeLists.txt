@@ -54,8 +54,7 @@ target_link_libraries(Pico_uart
         pico_stdlib
         hardware_uart
         hardware_timer
-        m
-)
+        )
 
 # Add the standard include files to the build
 target_include_directories(Pico_uart PRIVATE

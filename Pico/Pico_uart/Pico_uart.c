@@ -21,7 +21,7 @@
 // ----------------------------------------------
 
 // --- CONFIGURAÇÕES DO PROJETO ---
-#define BAUD_RATE 460800  // Baud Rate de comunicacao UART (Pico -> FPGA)
+#define BAUD_RATE 9600  // Baud Rate de comunicacao UART (Pico -> FPGA)
 #define UART_ID uart0     // Usando UART0 (GP0=TX, GP1=RX por padrao)
 #define UART_TX_PIN 0     // TX da UART no Pico
 #define UART_RX_PIN 1     // RX da UART no Pico
@@ -74,6 +74,8 @@ int main() {
     uart_init(UART_ID, BAUD_RATE);
     gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
     gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+    uart_set_format(UART_ID, 8, 1, UART_PARITY_NONE);
+    uart_set_fifo_enabled(UART_ID, true);
 
     // --- INICIALIZACAO DO LED DE DEBUG ---
     gpio_init(DEBUG_LED_PIN);
@@ -111,10 +113,10 @@ int main() {
  * @brief Envia um sample de 12 bits (uint16_t) empacotado em 4 bytes de transmissao UART.
  * Pacote: [SYNC1] [SYNC2] [MSB] [LSB]
  */
-void send_data_via_uart(uint16_t sample) {
+void send_data_via_uart(uint8_t sample) {
     // 1. Envia Sync Bytes
     uart_putc_raw(UART_ID, SYNC_BYTE_1);
-    uart_putc_raw(UART_ID, SYNC_BYTE_2);
+    //uart_putc_raw(UART_ID, SYNC_BYTE_2);
 
     // 2. Empacota o sample de 12 bits (usando 2 bytes)
     uint8_t msb = (uint8_t)((sample >> 8) & 0xFF);  // O MSB (Most Significant Byte) contem os bits 11 a 8
@@ -122,7 +124,7 @@ void send_data_via_uart(uint16_t sample) {
 
     // 3. Envia os bytes do sample
     uart_putc_raw(UART_ID, msb);
-    uart_putc_raw(UART_ID, lsb);
+    //uart_putc_raw(UART_ID, lsb);
 }
 
 /**

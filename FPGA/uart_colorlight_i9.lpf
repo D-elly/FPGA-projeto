@@ -1,0 +1,40 @@
+############################################################
+# Colorlight i9 v7.2  (LFE5U-45F-6BG381C)
+# Configuração UART para comunicação FPGA <-> Raspberry Pi Pico
+# 
+# Projeto: Sistema UART bidirecional @ 115200 baud
+# Clock: 25 MHz (interno do Colorlight i9)
+# Autor: Projeto Embarcatech - Etapa 2
+############################################################
+
+# ============================================================
+# CLOCK - 25 MHz (Oscilador interno do Colorlight i9)
+# ============================================================
+# Nota: O módulo UART espera 50 MHz, então use PLL para gerar 50 MHz
+# ou ajuste CLKS_PER_BIT = 217 para 25 MHz @ 115200 baud
+LOCATE COMP "clk_50mhz" SITE "P3";
+IOBUF  PORT "clk_50mhz" IO_TYPE=LVCMOS33;
+FREQUENCY PORT "clk_50mhz" 25.0 MHz;
+
+# ============================================================
+# RESET - Botão de reset (ativo baixo)
+# ============================================================
+# Usar entrada I1 como botão de reset
+LOCATE COMP "reset_n" SITE "D1";
+IOBUF  PORT "reset_n" IO_TYPE=LVCMOS33 PULLMODE=UP;
+
+# ============================================================
+# UART - Comunicação com Raspberry Pi Pico
+# ============================================================
+# CONFIGURAÇÃO ORIGINAL (FUNCIONAVA NO TESTE MANUAL)
+# UART TX (FPGA transmite -> Pico recebe)
+# Conectar ao pino RX do Raspberry Pi Pico (GP1)
+LOCATE COMP "uart_tx" SITE "D2";  # ORIGINAL - FUNCIONAVA!
+IOBUF  PORT "uart_tx" IO_TYPE=LVCMOS33 DRIVE=8 SLEWRATE=FAST;
+
+# UART RX (FPGA recebe <- Pico transmite)
+# Conectar ao pino TX do Raspberry Pi Pico (GP0)
+LOCATE COMP "uart_rx" SITE "A3";  # ORIGINAL
+IOBUF  PORT "uart_rx" IO_TYPE=LVCMOS33 PULLMODE=UP;
+
+SYSCONFIG CONFIG_IOVOLTAGE=3.3 COMPRESS_CONFIG=ON MCCLK_FREQ=62;
