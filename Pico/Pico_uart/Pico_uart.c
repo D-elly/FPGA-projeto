@@ -1,26 +1,26 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/uart.h"
-
+#include "hardware/pwm.h"  // [NOVO] Inclusão da biblioteca para controle PWM
 
 #define UART_ID uart0
 #define BAUD_RATE 9600
 #define UART_TX_PIN 0
 #define UART_RX_PIN 1
 
-const uint BUZZER_PIN = 21; 
+const uint BUZZER_PIN = 21;  // Pino conectado ao buzzer
 
 //Usar quando for configurar matriz de melody notes e melody durations
 //#define WIDTH 16
 //#define LENGHT 16
 #define HEADER_BYTE 0xAA  // Byte de sincronização
 
+#define N_NOTES (sizeof(melody_notes) / sizeof(melody_notes[0]))
+
 volatile uint8_t queue[N_NOTES];
 volatile int counter = 0;
 volatile bool synced = false;
 volatile bool header_echo_received = false;  // NOVA FLAG
-
-#define N_NOTES (sizeof(melody_notes) / sizeof(melody_notes[0]))
 
 const uint melody_notes[] = {  // Frequencias das notas em Hz
     180, 392, 440, 440, 392, 392, 330, 
@@ -39,6 +39,19 @@ const uint melody_durations[] = { // Duracoes de cada nota em ms
 };
 
 void send_image_16x16_raw(uint8_t img[N_NOTES]);
+
+// [NOVO] Função para configurar o PWM do buzzer com frequência recebida
+void configure_pwm_for_buzzer(uint freq) {
+    uint slice_num = pwm_gpio_to_slice_num(BUZZER_PIN);
+    uint channel = pwm_gpio_to_channel(BUZZER_PIN);
+
+    uint32_t clock_freq = 125000000; // Clock padrão do Pico
+    uint32_t wrap = clock_freq / freq;
+
+    pwm_set_wrap(slice_num, wrap);
+    pwm_set_chan_level(slice_num, channel, wrap / 2);  // 50% duty cycle
+    pwm_set_enabled(slice_num, true);
+}
 
 void on_uart_rx() {
     while (uart_is_readable(UART_ID)) {
@@ -92,6 +105,10 @@ int main() {
     gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
     uart_set_format(UART_ID, 8, 1, UART_PARITY_NONE);
     uart_set_fifo_enabled(UART_ID, true);
+    
+    // [NOVO] Configura o pino do buzzer como saída PWM
+    gpio_set_function(BUZZER_PIN, GPIO_FUNC_PWM);
+    pwm_set_enabled(pwm_gpio_to_slice_num(BUZZER_PIN), false);  // desliga inicialmente
     
     printf("\n=== TESTE UART 16x16 COM SINCRONIZACAO ===\n");
     printf("Header: 0x%02X\n", HEADER_BYTE);
@@ -153,12 +170,22 @@ int main() {
                 uint8_t v = (i < counter) ? queue[i] : 0x00;
                 printf("|0x%02X| ", v);
                 if (v == matrix[i]) correct++;
+
+                // [NOVO] Reproduz a nota recebida via PWM
+                if (v > 0) {
+                    configure_pwm_for_buzzer(v);  // ajusta frequência
+                    sleep_ms(300);                // duração fixa por nota
+                }
             //}
             printf("\n");
         }
+
+        pwm_set_enabled(pwm_gpio_to_slice_num(BUZZER_PIN), false);  // [NOVO] desliga PWM após reprodução
+
         printf("\nBytes corretos: %d/%d (%.1f%%)\n", correct, N_NOTES, 
                100.0*correct/(N_NOTES));
     }
+
     while (1) tight_loop_contents();
     
     // int c;
