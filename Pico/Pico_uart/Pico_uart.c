@@ -2,15 +2,20 @@
 #include "pico/stdlib.h"
 #include "hardware/uart.h"
 
+
 #define UART_ID uart0
 #define BAUD_RATE 9600
 #define UART_TX_PIN 0
 #define UART_RX_PIN 1
-#define WIDTH 30
-#define LENGHT 16
+
+const uint BUZZER_PIN = 21; 
+
+//Usar quando for configurar matriz de melody notes e melody durations
+//#define WIDTH 16
+//#define LENGHT 16
 #define HEADER_BYTE 0xAA  // Byte de sincronização
 
-volatile uint8_t queue[WIDTH*LENGHT];
+volatile uint8_t queue[N_NOTES];
 volatile int counter = 0;
 volatile bool synced = false;
 volatile bool header_echo_received = false;  // NOVA FLAG
@@ -25,7 +30,15 @@ const uint melody_notes[] = {  // Frequencias das notas em Hz
     349, 349, 330, 330, 294            
 };
 
-void send_image_16x16_raw(uint8_t img[WIDTH]);
+const uint melody_durations[] = { // Duracoes de cada nota em ms
+    500, 500, 500, 500, 500, 500, 1000, 
+    500, 500, 500, 500, 1000,           
+    500, 500, 500, 500, 500, 500, 1000,
+    500, 500, 500, 500, 500, 500, 1000,
+    500, 500, 500, 500, 1000
+};
+
+void send_image_16x16_raw(uint8_t img[N_NOTES]);
 
 void on_uart_rx() {
     while (uart_is_readable(UART_ID)) {
