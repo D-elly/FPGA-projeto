@@ -5,6 +5,7 @@
 # Projeto: Sistema UART bidirecional @ 115200 baud
 # Clock: 25 MHz (interno do Colorlight i9)
 # Autor: Projeto Embarcatech - Etapa 2
+# Atualização: Adicionado LPF digital pós-recepção UART (SystemVerilog)
 ############################################################
 
 # ============================================================
@@ -37,4 +38,7 @@ IOBUF  PORT "uart_tx" IO_TYPE=LVCMOS33 DRIVE=8 SLEWRATE=FAST;
 LOCATE COMP "uart_rx" SITE "A3";  # ORIGINAL
 IOBUF  PORT "uart_rx" IO_TYPE=LVCMOS33 PULLMODE=UP;
 
-SYSCONFIG CONFIG_IOVOLTAGE=3.3 COMPRESS_CONFIG=ON MCCLK_FREQ=62;
+# Observação: LPF digital adicionado após uart_rx no código SystemVerilog
+# A filtragem é lógica e não altera os pinos físicos mapeados aqui
+
+SYSCONFIG CONFIG_IOVOLTAGE=3.3 COMPRESS_CONFIG=ON MCCLK_FREQ=62;=3.3 COMPRESS_CONFIG=ON MCCLK_FREQ=62;
