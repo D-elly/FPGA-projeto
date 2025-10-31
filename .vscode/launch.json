@@ -21,4 +21,5 @@
       ]
     }
   ]
+  // Projeto inclui LPF digital para suavização de dados UART recebidos do FPGA
 }
