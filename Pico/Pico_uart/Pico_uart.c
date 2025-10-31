@@ -185,7 +185,46 @@ int main() {
         printf("\nBytes corretos: %d/%d (%.1f%%)\n", correct, N_NOTES, 
                100.0*correct/(N_NOTES));
     }
+    // [NOVO] Configura os botões A e B
+    const uint BUTTON_A = 14;
+    const uint BUTTON_B = 15;
+    gpio_init(BUTTON_A);
+    gpio_set_dir(BUTTON_A, GPIO_IN);
+    gpio_pull_up(BUTTON_A);
 
+    gpio_init(BUTTON_B);
+    gpio_set_dir(BUTTON_B, GPIO_IN);
+    gpio_pull_up(BUTTON_B);
+
+    printf("\nPressione A para áudio original, B para áudio com efeito.\n");
+
+    while (1) {
+        if (!gpio_get(BUTTON_A)) {
+            printf("\n▶ Reproduzindo áudio original...\n");
+            for (int i = 0; i < N_NOTES; i++) {
+                if (matrix[i] > 0) {
+                    configure_pwm_for_buzzer(matrix[i]);
+                    sleep_ms(melody_durations[i]);
+                }
+            }
+            pwm_set_enabled(pwm_gpio_to_slice_num(BUZZER_PIN), false);
+            sleep_ms(200);  // debounce
+        }
+
+        if (!gpio_get(BUTTON_B)) {
+            printf("\n▶ Reproduzindo áudio com efeito...\n");
+            for (int i = 0; i < N_NOTES; i++) {
+                if (queue[i] > 0) {
+                    configure_pwm_for_buzzer(queue[i]);
+                    sleep_ms(melody_durations[i]);
+                }
+            }
+            pwm_set_enabled(pwm_gpio_to_slice_num(BUZZER_PIN), false);
+            sleep_ms(200);  // debounce
+        }
+
+        sleep_ms(10);  // loop leve
+    }
     while (1) tight_loop_contents();
     
     // int c;
