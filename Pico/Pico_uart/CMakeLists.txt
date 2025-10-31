@@ -13,6 +13,8 @@ if (EXISTS ${picoVscode})
 endif()
 # ====================================================================================
 # Generated Cmake Pico project file
+# Projeto inclui LPF digital para suavização de dados UART recebidos do FPGA
+# ====================================================================================
 cmake_minimum_required(VERSION 3.13)
 
 set(CMAKE_C_STANDARD 11)
@@ -62,4 +64,3 @@ target_include_directories(Pico_uart PRIVATE
 )
 
 pico_add_extra_outputs(Pico_uart)
-
