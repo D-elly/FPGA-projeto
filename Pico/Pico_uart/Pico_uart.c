@@ -53,15 +53,15 @@ void play_melody(uint pin, uint8_t melody[N_NOTES]);
 //configura buzzer pin como saída pwm
 void pwm_init_buzzer(uint pin);
 
+//void compress_notes(uint8_t)
+
 int main() {
     stdio_usb_init();
-    sleep_ms(8000);
 
     uint8_t matrix[N_NOTES];
     for (int i = 0; i < N_NOTES; i++) {
         matrix[i] = melody_notes[i];
-    }
-    
+    }  
 
     uart_init(UART_ID, BAUD_RATE);
     gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
@@ -71,7 +71,6 @@ int main() {
     
     // Configura o pino do buzzer como saída PWM
     pwm_init_buzzer(BUZZER_PIN);
-    pwm_set_enabled(pwm_gpio_to_slice_num(BUZZER_PIN), false);  // desliga inicialmente
 
     // Configura os botões A e B
     gpio_init(BUTTON_A);
@@ -80,8 +79,6 @@ int main() {
     gpio_init(BUTTON_B);
     gpio_set_dir(BUTTON_B, GPIO_IN);
     gpio_pull_up(BUTTON_B);
-    
-    printf("\nPressione A para áudio original, B para áudio com efeito.\n");
     
     printf("\n=== TESTE UART 16x16 COM SINCRONIZACAO ===\n");
     printf("Header: 0x%02X\n", HEADER_BYTE);
@@ -144,31 +141,12 @@ int main() {
                100.0*correct/(N_NOTES));
     }
 
-    while (1) {
-        if (!gpio_get(BUTTON_A)) {
-            printf("\nReproduzindo áudio original...\n");
-            for (int i = 0; i < N_NOTES; i++) {
-                if (matrix[i] > 0) {
-                    play_melody(BUZZER_PIN, matrix);
-                }
-            }
-            pwm_set_enabled(pwm_gpio_to_slice_num(BUZZER_PIN), false);
-            sleep_ms(200);  // debounce
-        }
+    printf("Reproduzindo audio original\n");
+    play_melody(BUZZER_PIN, matrix);
 
-        if (!gpio_get(BUTTON_B)) {
-            printf("\nReproduzindo áudio com efeito...\n");
-            for (int i = 0; i < N_NOTES; i++) {
-                if (queue[i] > 0) {
-                    play_melody(BUZZER_PIN, queue);
-                }
-            }
-            pwm_set_enabled(pwm_gpio_to_slice_num(BUZZER_PIN), false);
-            sleep_ms(200);  // debounce
-        }
+    printf("Reproduzindo áudio vindo do FPGA\n");
+    play_melody(BUZZER_PIN, queue);
 
-        sleep_ms(10);  // loop leve
-    }
     while (1) tight_loop_contents();
 }
     
@@ -180,28 +158,6 @@ void on_uart_tx(uint8_t sample[N_NOTES]) {
         sleep_ms(2);  // 2ms por byte
         
     }
-}
-
-// void configure_pwm_for_buzzer(uint freq) {
-//     uint slice_num = pwm_gpio_to_slice_num(BUZZER_PIN);
-//     uint channel = pwm_gpio_to_channel(BUZZER_PIN);
-
-//     uint32_t clock_freq = 125000000; // Clock padrão do Pico
-//     uint32_t wrap = clock_freq / freq;
-
-//     pwm_set_wrap(slice_num, wrap);
-//     pwm_set_chan_level(slice_num, channel, wrap / 2);  // 50% duty cycle
-//     pwm_set_enabled(slice_num, true);
-// }
-
-// Inicialização do PWM para o buzzer
-void pwm_init_buzzer(uint pin) {
-    gpio_set_function(pin, GPIO_FUNC_PWM);
-    uint slice_num = pwm_gpio_to_slice_num(pin);
-    pwm_config config = pwm_get_default_config();
-    pwm_config_set_clkdiv(&config, 4.0f); 
-    pwm_init(slice_num, &config, true);
-    pwm_set_gpio_level(pin, 0); 
 }
 
 void on_uart_rx() {
@@ -239,7 +195,6 @@ void on_uart_rx() {
     }
 }
 
-// Tocar uma nota com frequência e duração específicas
 void play_tone(uint pin, uint8_t frequency, uint duration_ms) {
     uint slice_num = pwm_gpio_to_slice_num(pin);
     uint32_t clock_freq = clock_get_hz(clk_sys);
@@ -253,9 +208,23 @@ void play_tone(uint pin, uint8_t frequency, uint duration_ms) {
     sleep_ms(50); // Pausa entre notas
 }
 
-// Função para reproduzir "Brilha, Brilha Estrelinha"
 void play_melody(uint pin, uint8_t melody[N_NOTES]) {
-    for (int i = 0; i < sizeof(melody[N_NOTES]); i++) {
+    for (int i = 0; i < N_NOTES; i++) {
+        printf("Qual a nota está tocando: [%i] [%i]\n", i, melody[i]);
         play_tone(pin, melody[i], melody_durations[i]);
     }
 }
+
+
+void pwm_init_buzzer(uint pin) {
+    gpio_set_function(pin, GPIO_FUNC_PWM);
+    uint slice_num = pwm_gpio_to_slice_num(pin);
+    pwm_config config = pwm_get_default_config();
+    pwm_config_set_clkdiv(&config, 4.0f); 
+    pwm_init(slice_num, &config, true);
+    pwm_set_gpio_level(pin, 0); 
+}
+
+
+
+
