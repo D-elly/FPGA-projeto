@@ -155,7 +155,7 @@ void on_uart_tx(uint8_t sample[N_NOTES]) {
         uint8_t b = sample[i];
         while (!uart_is_writable(UART_ID)) tight_loop_contents();
         uart_putc_raw(UART_ID, b);
-        sleep_ms(2);  // 2ms por byte
+        //sleep_ms(2);  // 2ms por byte
         
     }
 }
@@ -198,7 +198,7 @@ void on_uart_rx() {
 void play_tone(uint pin, uint8_t frequency, uint duration_ms) {
     uint slice_num = pwm_gpio_to_slice_num(pin);
     uint32_t clock_freq = clock_get_hz(clk_sys);
-    uint32_t top = clock_freq / frequency - 1;
+    uint32_t top = clock_freq / (frequency * 2.5) - 1;  //multiplicando por 2.5 para saída ser audivel
 
     pwm_set_wrap(slice_num, top);
     pwm_set_gpio_level(pin, top / 2); 
