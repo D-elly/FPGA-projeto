@@ -15,12 +15,12 @@
 
 //clock_handle_t clk_sys = 125000000;
 
-const uint melody_notes[] = {  // Frequencias das notas em Hz
-    180, 392, 440, 440, 392, 392, 330, 
-    349, 349, 330, 330, 294,           
-    392, 392, 349, 349, 330, 330, 294, 
-    392, 392, 440, 440, 392, 392, 330, 
-    349, 349, 330, 330, 294            
+const uint8_t melody_notes[] = {  // Frequencias das notas em Hz
+    255, 255, 255, 255, 255, 255, 255, 
+    255, 255, 255, 255, 255,           
+    255, 255, 255, 255, 255, 255, 255, 
+    255, 255, 255, 255, 255, 255, 255, 
+    255, 255, 255, 255, 255            
 };
 
 const uint melody_durations[] = { // Duracoes de cada nota em ms
@@ -33,24 +33,31 @@ const uint melody_durations[] = { // Duracoes de cada nota em ms
 
 #define N_NOTES (sizeof(melody_notes) / sizeof(melody_notes[0]))
 
-uint queue[N_NOTES];
+uint8_t queue[N_NOTES];
 volatile int counter = 0;
 volatile bool synced = false;
 volatile bool header_echo_received = false;  // NOVA FLAG
 
-// Prototipos
-void send_image_16x16(uint8_t img[N_NOTES]);
-// void configure_pwm_for_buzzer(uint freq);
+// TX ativo, envia dados para o FPGA
+void on_uart_tx(uint8_t sample[N_NOTES]);
+
+// RX ativo, recebe dados do FPGA;
 void on_uart_rx();
-void play_tone(uint pin, uint frequency, uint duration_ms);
-void play_melody(uint pin, uint melody[N_NOTES]);
+
+//configura tons das notas para serem reproduzidos no buzzer via PWM
+void play_tone(uint pin, uint8_t frequency, uint duration_ms);
+
+//função de chamada, coordena qual nota e duração vai ser tocada
+void play_melody(uint pin, uint8_t melody[N_NOTES]);
+
+//configura buzzer pin como saída pwm
 void pwm_init_buzzer(uint pin);
 
 int main() {
     stdio_usb_init();
     sleep_ms(8000);
 
-    uint matrix[N_NOTES];
+    uint8_t matrix[N_NOTES];
     for (int i = 0; i < N_NOTES; i++) {
         matrix[i] = melody_notes[i];
     }
@@ -98,6 +105,9 @@ int main() {
     // ENVIA HEADER PRIMEIRO
     uart_putc_raw(UART_ID, HEADER_BYTE);
     sleep_ms(10);  // Espera header ser processado
+
+    //depois de enviar cabeçalho, envia dados da matrix
+    on_uart_tx(matrix);
     
     uint32_t start_ms = to_ms_since_boot(get_absolute_time());
     const uint32_t timeout_ms = 10000;
@@ -112,7 +122,9 @@ int main() {
 
     printf("Matriz Original:\n");
     for (int i = 0; i < N_NOTES; i++) {
-        printf("|0x%02X| \n", matrix[i]);
+        printf("[%02d] ", i);
+        printf("|0x%02X|", matrix[i]);
+        printf("\n");
     }
 
     printf("\nRecebidos %d byte(s) (synced=%d, header_echo=%d):\n", counter, synced, header_echo_received);
@@ -127,8 +139,6 @@ int main() {
             if (v == matrix[i]) correct++;
             printf("\n");
         }
-
-        //pwm_set_enabled(pwm_gpio_to_slice_num(BUZZER_PIN), false);  // Desliga PWM após reprodução
 
         printf("\nBytes corretos: %d/%d (%.1f%%)\n", correct, N_NOTES, 
                100.0*correct/(N_NOTES));
@@ -162,9 +172,9 @@ int main() {
     while (1) tight_loop_contents();
 }
     
-void send_image_16x16(uint8_t img[N_NOTES]) {
+void on_uart_tx(uint8_t sample[N_NOTES]) {
     for (int i = 0; i < N_NOTES; i++) {
-        uint8_t b = img[i];
+        uint8_t b = sample[i];
         while (!uart_is_writable(UART_ID)) tight_loop_contents();
         uart_putc_raw(UART_ID, b);
         sleep_ms(2);  // 2ms por byte
@@ -230,7 +240,7 @@ void on_uart_rx() {
 }
 
 // Tocar uma nota com frequência e duração específicas
-void play_tone(uint pin, uint frequency, uint duration_ms) {
+void play_tone(uint pin, uint8_t frequency, uint duration_ms) {
     uint slice_num = pwm_gpio_to_slice_num(pin);
     uint32_t clock_freq = clock_get_hz(clk_sys);
     uint32_t top = clock_freq / frequency - 1;
@@ -244,7 +254,7 @@ void play_tone(uint pin, uint frequency, uint duration_ms) {
 }
 
 // Função para reproduzir "Brilha, Brilha Estrelinha"
-void play_melody(uint pin, uint melody[N_NOTES]) {
+void play_melody(uint pin, uint8_t melody[N_NOTES]) {
     for (int i = 0; i < sizeof(melody[N_NOTES]); i++) {
         play_tone(pin, melody[i], melody_durations[i]);
     }
