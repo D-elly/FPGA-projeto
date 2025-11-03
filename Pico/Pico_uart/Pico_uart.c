@@ -1,19 +1,30 @@
 #include <stdio.h>
+#include <math.h>
 #include "pico/stdlib.h"
 #include "hardware/uart.h"
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
+#include "hardware/timer.h"
 
+//para funcionamento do UART
 #define UART_ID uart0
-#define BAUD_RATE 9600
+#define BAUD_RATE 115200
 #define UART_TX_PIN 0
 #define UART_RX_PIN 1
+#define HEADER_BYTE 0xAA  // Byte de sincronização
+#define SAMPLE_RATE 4000           // Taxa de amostragem desejada (Hz)
+
 #define BUTTON_A 5
 #define BUTTON_B 6
-#define BUZZER_PIN 21  // Pino conectado ao buzzer
-#define HEADER_BYTE 0xAA  // Byte de sincronização
 
-//clock_handle_t clk_sys = 125000000;
+//Saídas do processamento
+#define BUZZER_PIN 21  // Pino conectado ao buzzer
+#define DAC_OSC_PIN 20 // Pino conecctado ao osciloscópio
+
+#define N_NOTES (sizeof(melody_notes) / sizeof(melody_notes[0]))
+
+#define ADC_CENTER 128               // Centro da escala de 12 bits (2^11)
+#define ADC_AMPLITUDE 127           // Amplitude maxima (2^11 - 1)
 
 const uint8_t melody_notes[] = {  // Frequencias das notas em Hz
     255, 255, 255, 255, 255, 255, 255, 
@@ -31,15 +42,17 @@ const uint melody_durations[] = { // Duracoes de cada nota em ms
     500, 500, 500, 500, 1000
 };
 
-#define N_NOTES (sizeof(melody_notes) / sizeof(melody_notes[0]))
-
 uint8_t queue[N_NOTES];
 volatile int counter = 0;
 volatile bool synced = false;
 volatile bool header_echo_received = false;  // NOVA FLAG
+volatile uint32_t sample_counter = 0;                        // Contador global para o tempo dentro da onda senoidal
+const uint32_t SAMPLE_INTERVAL_US = 1000000 / SAMPLE_RATE;   // Variável para controlar o tempo de intervalo entre samples (em microsegundos)
+
+struct repeating_timer timer;
 
 // TX ativo, envia dados para o FPGA
-void on_uart_tx(uint8_t sample[N_NOTES]);
+void on_uart_tx(uint8_t sample);
 
 // RX ativo, recebe dados do FPGA;
 void on_uart_rx();
@@ -48,20 +61,23 @@ void on_uart_rx();
 void play_tone(uint pin, uint8_t frequency, uint duration_ms);
 
 //função de chamada, coordena qual nota e duração vai ser tocada
-void play_melody(uint pin, uint8_t melody[N_NOTES]);
+void play_melody(uint pin, uint8_t melody);
+
+//configura pwm para entrada do osciloscópio ser analógica
+void pwm_init_dac_osc(uint pin);
 
 //configura buzzer pin como saída pwm
 void pwm_init_buzzer(uint pin);
 
-//void compress_notes(uint8_t)
+//calcula amplitude da onda sonora da nota enviada, gerando amostra para FPGA  
+uint8_t calculate_sine_sample(uint freq, uint time_step);
+
+//função de chamada para ativar Uart TX
+bool timer_callback(struct repeating_timer *t);
 
 int main() {
     stdio_usb_init();
-
-    uint8_t matrix[N_NOTES];
-    for (int i = 0; i < N_NOTES; i++) {
-        matrix[i] = melody_notes[i];
-    }  
+    sleep_ms(8000);
 
     uart_init(UART_ID, BAUD_RATE);
     gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
@@ -69,26 +85,16 @@ int main() {
     uart_set_format(UART_ID, 8, 1, UART_PARITY_NONE);
     uart_set_fifo_enabled(UART_ID, true);
     
-    // Configura o pino do buzzer como saída PWM
+    // Configura o pino do buzzer e pino do osciloscópio como saída PWM
     pwm_init_buzzer(BUZZER_PIN);
-
-    // Configura os botões A e B
-    gpio_init(BUTTON_A);
-    gpio_set_dir(BUTTON_A, GPIO_IN);
-    gpio_pull_up(BUTTON_A);
-    gpio_init(BUTTON_B);
-    gpio_set_dir(BUTTON_B, GPIO_IN);
-    gpio_pull_up(BUTTON_B);
-    
-    printf("\n=== TESTE UART 16x16 COM SINCRONIZACAO ===\n");
-    printf("Header: 0x%02X\n", HEADER_BYTE);
-    printf("Enviando matriz com delay de 2ms/byte...\n\n");
+    pwm_init_dac_osc(DAC_OSC_PIN);
     
     // Limpa buffer UART múltiplas vezes
     for (int clear = 0; clear < 5; clear++) {
         while (uart_is_readable(UART_ID)) uart_getc(UART_ID);
-        sleep_ms(20);
     }
+
+    printf("limpou buffer\n");
     
     counter = 0;
     synced = false;
@@ -98,66 +104,21 @@ int main() {
     irq_set_exclusive_handler(UART_IRQ, on_uart_rx);
     irq_set_enabled(UART_IRQ, true);
     uart_set_irq_enables(UART_ID, true, false);
+    printf("configurou interrupção de on_uart_rx\n");
     
-    // ENVIA HEADER PRIMEIRO
-    uart_putc_raw(UART_ID, HEADER_BYTE);
-    sleep_ms(10);  // Espera header ser processado
-
-    //depois de enviar cabeçalho, envia dados da matrix
-    on_uart_tx(matrix);
-    
-    uint32_t start_ms = to_ms_since_boot(get_absolute_time());
-    const uint32_t timeout_ms = 10000;
-    while ((counter < (N_NOTES)) && 
-           ((to_ms_since_boot(get_absolute_time()) - start_ms) < timeout_ms)) {
-        sleep_ms(1);
-    }
-
-    sleep_ms(100);
-    uart_set_irq_enables(UART_ID, false, false);
-    irq_set_enabled(UART_IRQ, false);
-
-    printf("Matriz Original:\n");
-    for (int i = 0; i < N_NOTES; i++) {
-        printf("[%02d] ", i);
-        printf("|0x%02X|", matrix[i]);
-        printf("\n");
-    }
-
-    printf("\nRecebidos %d byte(s) (synced=%d, header_echo=%d):\n", counter, synced, header_echo_received);
-    if (counter == 0) {
-        printf("Nenhuma resposta do FPGA.\n");
-    } else {
-        int correct = 0;
-        for (int i = 0; i < N_NOTES; i++) {
-            printf("[%02d] ", i);
-            uint8_t v = (i < counter) ? queue[i] : 0x00;
-            printf("|0x%02X| ", v);
-            if (v == matrix[i]) correct++;
-            printf("\n");
-        }
-
-        printf("\nBytes corretos: %d/%d (%.1f%%)\n", correct, N_NOTES, 
-               100.0*correct/(N_NOTES));
-    }
-
-    printf("Reproduzindo audio original\n");
-    play_melody(BUZZER_PIN, matrix);
-
-    printf("Reproduzindo áudio vindo do FPGA\n");
-    play_melody(BUZZER_PIN, queue);
+    // 2. CONFIGURACAO DO TIMER (Para amostragem precisa) em intervalos fixos (44.1kHz)
+    add_repeating_timer_us(SAMPLE_INTERVAL_US, timer_callback, NULL, &timer);
+    printf("configurou interrupção de on_uart_tx\n");
 
     while (1) tight_loop_contents();
 }
     
-void on_uart_tx(uint8_t sample[N_NOTES]) {
-    for (int i = 0; i < N_NOTES; i++) {
-        uint8_t b = sample[i];
-        while (!uart_is_writable(UART_ID)) tight_loop_contents();
-        uart_putc_raw(UART_ID, b);
-        //sleep_ms(2);  // 2ms por byte
-        
-    }
+void on_uart_tx(uint8_t sample) {
+    while (!uart_is_writable(UART_ID)) tight_loop_contents();
+
+    uart_putc_raw(UART_ID, HEADER_BYTE);
+    uart_putc_raw(UART_ID, sample);
+    printf("está mandando o sample: %i \n", sample);
 }
 
 void on_uart_rx() {
@@ -184,13 +145,13 @@ void on_uart_rx() {
             } else {
                 // primeiro byte não-header após a sincronização é o primeiro dado
                 header_echo_received = true;
+                queue[0] = byte;
+                printf("|0x%02X| \n", queue[0]);
+                printf("Reproduzindo áudio vindo do FPGA\n");
+                pwm_set_gpio_level(DAC_OSC_PIN, byte);
+                synced = false;
                 // cai para armazenar este byte abaixo
             }
-        }
-
-        // armazena bytes de dados (apenas dados reais; headers iniciais já removidos)
-        if (counter < (N_NOTES)) {
-            queue[counter++] = byte;
         }
     }
 }
@@ -200,31 +161,65 @@ void play_tone(uint pin, uint8_t frequency, uint duration_ms) {
     uint32_t clock_freq = clock_get_hz(clk_sys);
     uint32_t top = clock_freq / (frequency * 2.5) - 1;  //multiplicando por 2.5 para saída ser audivel
 
-    pwm_set_wrap(slice_num, top);
+    pwm_set_wrap(slice_num, 255);
     pwm_set_gpio_level(pin, top / 2); 
 
-    sleep_ms(duration_ms);
     pwm_set_gpio_level(pin, 0); 
-    sleep_ms(50); // Pausa entre notas
 }
 
-void play_melody(uint pin, uint8_t melody[N_NOTES]) {
-    for (int i = 0; i < N_NOTES; i++) {
-        printf("Qual a nota está tocando: [%i] [%i]\n", i, melody[i]);
-        play_tone(pin, melody[i], melody_durations[i]);
-    }
+void play_melody(uint pin, uint8_t melody) {
+        printf("Qual a nota está tocando: [%i] [%i]\n", 0, melody);
+        play_tone(pin, melody, melody_durations[0]);
 }
 
+void pwm_init_dac_osc(uint pin) {
+    gpio_set_function(pin, GPIO_FUNC_PWM);
+    uint slice_num = pwm_gpio_to_slice_num(pin);
+    pwm_config config = pwm_get_default_config();
+    pwm_config_set_clkdiv(&config, 1.0f); 
+    pwm_init(slice_num, &config, true);
+    pwm_set_wrap(slice_num, 255);
+    pwm_set_gpio_level(pin, 0); 
+}
 
 void pwm_init_buzzer(uint pin) {
     gpio_set_function(pin, GPIO_FUNC_PWM);
     uint slice_num = pwm_gpio_to_slice_num(pin);
     pwm_config config = pwm_get_default_config();
-    pwm_config_set_clkdiv(&config, 4.0f); 
+    pwm_config_set_clkdiv(&config, 125.0f); 
     pwm_init(slice_num, &config, true);
     pwm_set_gpio_level(pin, 0); 
 }
 
+uint8_t calculate_sine_sample(uint freq, uint time_step) {
+    // Calcula a fase: 2 * PI * f * t
+    double phase = 2.0 * M_PI * (double)freq * (double)time_step * ((double)SAMPLE_INTERVAL_US / 1000000.0);
+    printf("phase: %.2f\n", phase);
+    
+    // Calcula o valor senoidal, escala para amplitude de 12 bits e centraliza em 2048
+    double value = ADC_CENTER + (double)ADC_AMPLITUDE * sin(phase);
+    printf("value: %.2f\n", value);
+    
+    // Garante que o valor nao ultrapasse o limite de 12 bits (0 a 4095)
+    if (value > 255.0) value = 255;
+    if (value < 0.0) value = 0;
+
+    return (uint8_t)round(value);
+}
+
+bool timer_callback(struct repeating_timer *t) {
+    // 1. CALCULA O SAMPLE DA ONDA SENOIDAL DA FREQUÊNCIA ATUAL
+    uint8_t sample_value = calculate_sine_sample(melody_notes[0], sample_counter);
+    printf("sample_value: %i\n", sample_value);
+
+    // 2. ENVIAR VIA UART
+    on_uart_tx(sample_value);
+    printf("Fez a chamada de on_uart_tx no callback\n");
+
+    sample_counter++;
+
+    return true; // Para que o timer continue repetindo o callback
+}
 
 
 

@@ -27,7 +27,7 @@ module uart_echo_colorlight_i9 (
     
     uart_top #(
         .CLK_FREQ_HZ(25_000_000),
-        .BAUD_RATE(9600)
+        .BAUD_RATE(115200)
     ) uart_inst (
         .i_clk(clk_50mhz),
         .i_rst_n(reset_n_internal),
