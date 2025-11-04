@@ -146,9 +146,10 @@ void on_uart_rx() {
                 // primeiro byte não-header após a sincronização é o primeiro dado
                 header_echo_received = true;
                 queue[0] = byte;
-                printf("|0x%02X| \n", queue[0]);
+                printf("|retorno do fpga: %i| \n", queue[0]);
                 printf("Reproduzindo áudio vindo do FPGA\n");
                 pwm_set_gpio_level(DAC_OSC_PIN, byte);
+                pwm_set_gpio_level(BUZZER_PIN, byte);
                 synced = false;
                 // cai para armazenar este byte abaixo
             }
@@ -176,7 +177,7 @@ void pwm_init_dac_osc(uint pin) {
     gpio_set_function(pin, GPIO_FUNC_PWM);
     uint slice_num = pwm_gpio_to_slice_num(pin);
     pwm_config config = pwm_get_default_config();
-    pwm_config_set_clkdiv(&config, 1.0f); 
+    pwm_config_set_clkdiv(&config, 125.0f); 
     pwm_init(slice_num, &config, true);
     pwm_set_wrap(slice_num, 255);
     pwm_set_gpio_level(pin, 0); 
@@ -186,7 +187,7 @@ void pwm_init_buzzer(uint pin) {
     gpio_set_function(pin, GPIO_FUNC_PWM);
     uint slice_num = pwm_gpio_to_slice_num(pin);
     pwm_config config = pwm_get_default_config();
-    pwm_config_set_clkdiv(&config, 125.0f); 
+    pwm_config_set_clkdiv(&config, 1.0f); 
     pwm_init(slice_num, &config, true);
     pwm_set_gpio_level(pin, 0); 
 }
