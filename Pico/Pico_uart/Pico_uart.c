@@ -12,29 +12,23 @@
 #define UART_TX_PIN 0
 #define UART_RX_PIN 1
 #define HEADER_BYTE 0xAA  // Byte de sincronização
-#define SAMPLE_RATE 4000           // Taxa de amostragem desejada (Hz)
 
 //Saídas do processamento
 #define DAC_OSC_PIN 20 // Pino conecctado ao osciloscópio
-
-#define N_NOTES (sizeof(melody_notes) / sizeof(melody_notes[0]))
-
-#define ADC_CENTER 128               // Centro da escala de 12 bits (2^11)
-#define ADC_AMPLITUDE 127           // Amplitude maxima (2^11 - 1)
-
 #define BUZZER_PIN 16   // Pino conectado ao buzzer
+
 #define SINE_FREQ_HZ        250.0f    // Frequência alvo da senóide
 #define SAMPLES_PER_CYCLE   100       // Amostras por ciclo (→ Fs = 25 kHz)
 #define FS_HZ               (SINE_FREQ_HZ * SAMPLES_PER_CYCLE)  // 25 kHz
 
-
 // ---------- PWM ----------
 /*
- * f_pwm = clk_sys / (clkdiv * (wrap + 1))
+ * f_pwm = clk_sys / (clkdiv * (wrap + 1)
  * wrap=255 (8 bits), clkdiv=1.0 → f_pwm ≈ 125e6 / 256 ≈ 488 kHz
  */
 #define PWM_WRAP            255
 #define PWM_CLKDIV          1.0f
+#define N_SINES (sizeof(sine_table) / sizeof(sine_table[0]))
 
 //Tabela senoidal da nota dó(255 Hz)
 static const uint8_t sine_table[SAMPLES_PER_CYCLE] = {
@@ -55,8 +49,6 @@ static volatile uint32_t s_index = 0;
 volatile int counter = 0;
 volatile bool synced = false;
 volatile bool header_echo_received = false;  // NOVA FLAG
-volatile uint32_t sample_counter = 0;                        // Contador global para o tempo dentro da onda senoidal
-const uint32_t SAMPLE_INTERVAL_US = 1000000 / SAMPLE_RATE;   // Variável para controlar o tempo de intervalo entre samples (em microsegundos)
 
 struct repeating_timer timer;
 
@@ -75,6 +67,7 @@ void pwm_init_buzzer(uint pin);
 static bool sample_timer_cb(repeating_timer_t *rt);
 
 int main() {
+    stdio_init_all();
     stdio_usb_init();
 
     uart_init(UART_ID, BAUD_RATE);
@@ -87,7 +80,7 @@ int main() {
     pwm_init_buzzer(BUZZER_PIN);
     pwm_init_dac_osc(DAC_OSC_PIN);
     
-    // Limpa buffer UART múltiplas vezes
+    // // Limpa buffer UART múltiplas vezes
     for (int clear = 0; clear < 5; clear++) {
         while (uart_is_readable(UART_ID)) uart_getc(UART_ID);
     }
@@ -103,11 +96,10 @@ int main() {
     
     repeating_timer_t timer;
     double ts_us = 1e6 / FS_HZ;               // 40 us para 25 kHz
-    int64_t interval_us = -(int64_t)(ts_us);  // negativo = periódico no SDK
+    int64_t interval_us = (int64_t)(ts_us);  // negativo = periódico no SDK
 
-    if (!add_repeating_timer_us(interval_us, sample_timer_cb, NULL, &timer)) {
-        while (true) tight_loop_contents(); // fallback se falhar
-    }
+    add_repeating_timer_us(interval_us, sample_timer_cb, NULL, &timer); 
+
     while (1) tight_loop_contents();
 }
     
@@ -119,9 +111,6 @@ void on_uart_tx(uint8_t sample) {
 }
 
 void on_uart_rx() {
-    pwm_set_gpio_level(DAC_OSC_PIN, 0);
-    pwm_set_gpio_level(BUZZER_PIN, 0);
-
     while (uart_is_readable(UART_ID)) {
         int rv = uart_getc(UART_ID);
         if (rv < 0) break;
@@ -145,10 +134,10 @@ void on_uart_rx() {
             } else {
                 // primeiro byte não-header após a sincronização é o primeiro dado
                 header_echo_received = true;
-                printf("|retorno do fpga: %i| \n", byte);
                 pwm_set_gpio_level(DAC_OSC_PIN, byte);
                 pwm_set_gpio_level(BUZZER_PIN, byte);
                 synced = false;
+                printf("Byte: %i\n", byte);
                 // cai para armazenar este byte abaixo
             }
         }
@@ -162,19 +151,23 @@ void pwm_init_dac_osc(uint pin) {
 
     pwm_set_wrap(slice_num, PWM_WRAP);
     pwm_config_set_clkdiv(&config, PWM_CLKDIV);
-    pwm_init(slice_num, &config, true);
+    pwm_init(slice_num, &config, false);
 
-    pwm_set_gpio_level(pin, 0); 
+    pwm_set_gpio_level(pin, PWM_WRAP / 2); 
     pwm_set_enabled(slice_num, true);
 }
 
 void pwm_init_buzzer(uint pin) {
-    gpio_set_function(pin, GPIO_FUNC_PWM);
-    uint slice_num = pwm_gpio_to_slice_num(pin);
-    pwm_config config = pwm_get_default_config();
-    pwm_config_set_clkdiv(&config, 1.0f); 
-    pwm_init(slice_num, &config, true);
-    pwm_set_gpio_level(pin, 0); 
+    gpio_set_function(BUZZER_PIN, GPIO_FUNC_PWM);
+    uint slice = pwm_gpio_to_slice_num(pin);
+
+    pwm_config cfg = pwm_get_default_config();
+    pwm_config_set_wrap(&cfg, PWM_WRAP);
+    pwm_config_set_clkdiv(&cfg, PWM_CLKDIV);
+    pwm_init(slice, &cfg, false);
+
+    pwm_set_gpio_level(BUZZER_PIN, PWM_WRAP / 2);
+    pwm_set_enabled(slice, true);
 }
 
 static bool sample_timer_cb(repeating_timer_t *rt) {
@@ -182,7 +175,6 @@ static bool sample_timer_cb(repeating_timer_t *rt) {
     s_index++;
     if (s_index >= SAMPLES_PER_CYCLE) s_index = 0;
     on_uart_tx(level);
-
     return true; // continue recorrente
 }
 
