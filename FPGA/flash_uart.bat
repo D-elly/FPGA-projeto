@@ -1,6 +1,6 @@
 @echo off
 set OSSCAD=C:\oss-cad-suite
-set TOP=uart_top
+set TOP=uart_echo_colorlight_i9
 set LPF=uart_colorlight_i9.lpf
 set BOARD=colorlight-i9
 
