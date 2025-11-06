@@ -3,7 +3,7 @@ module eff_1 #(
 )( 
     input  logic       i_clk,         // Clock principal do sistema
     input  logic       i_rst_n,       // Reset assíncrono ativo baixo
-    input logic        data_valid     
+    input logic        data_valid, 
     input  logic [7:0] receive_byte,     // Byte recebido
     output  logic [7:0] clipping_byte   // Byte a ser transmitido
 );
