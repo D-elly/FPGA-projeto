@@ -3,23 +3,24 @@ module eff_1 #(
 )( 
     input  logic       i_clk,         // Clock principal do sistema
     input  logic       i_rst_n,       // Reset assíncrono ativo baixo
-    input  logic [7:0] receive_byte,     // Byte a ser transmitido
-    output  logic [7:0] modified_byte   // Byte a ser transmitido
+    input logic        data_valid     
+    input  logic [7:0] receive_byte,     // Byte recebido
+    output  logic [7:0] clipping_byte   // Byte a ser transmitido
 );
 
     // Limite de clipping (ajustável)
-    parameter signed [7:0] CLIP_LEVEL = 200;
+    logic [7:0] CLIP_LEVEL = 8'd200;
+    logic [7:0] clipping_get;
 
-    always_ff @(posedge i_clk or negedge i_rst_n) begin
-        if (i_rst_n) begin
-            // Aplicando hard clipping
-            if (receive_byte > CLIP_LEVEL)
-                modified_byte <= CLIP_LEVEL;
-            else if (receive_byte < -CLIP_LEVEL)
-                modified_byte <= -CLIP_LEVEL; //não vai ser usado, pois não manda valores negativos
-            else
-                modified_byte <= receive_byte;
+    always_ff @(posedge i_clk) begin
+        if (receive_byte > CLIP_LEVEL) begin
+            clipping_get <= CLIP_LEVEL;
+        end else if (receive_byte < -CLIP_LEVEL) begin
+            clipping_get <= -CLIP_LEVEL; //não vai ser usado, pois não manda valores negativos
+        end else begin
+            clipping_get <= receive_byte;
         end 
-    end
+    end 
+    assign clipping_byte = clipping_get;
 
 endmodule

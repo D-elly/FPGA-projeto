@@ -15,11 +15,17 @@
 
 //Saídas do processamento
 #define DAC_OSC_PIN 20 // Pino conecctado ao osciloscópio
-#define BUZZER_PIN 16   // Pino conectado ao buzzer
+#define BUZZER_PIN 21   // Pino conectado ao buzzer
 
 #define SINE_FREQ_HZ        250.0f    // Frequência alvo da senóide
 #define SAMPLES_PER_CYCLE   100       // Amostras por ciclo (→ Fs = 25 kHz)
 #define FS_HZ               (SINE_FREQ_HZ * SAMPLES_PER_CYCLE)  // 25 kHz
+
+#define BUTTON_A 5
+#define BUTTON_B 6
+#define PIN_16 16  //botão A
+#define PIN_18 18 //botao
+#define led_v 13
 
 // ---------- PWM ----------
 /*
@@ -64,6 +70,8 @@ void pwm_init_dac_osc(uint pin);
 //configura buzzer pin como saída pwm
 void pwm_init_buzzer(uint pin);
 
+void select_filter();
+
 static bool sample_timer_cb(repeating_timer_t *rt);
 
 int main() {
@@ -79,6 +87,28 @@ int main() {
     // Configura o pino do buzzer e pino do osciloscópio como saída PWM
     pwm_init_buzzer(BUZZER_PIN);
     pwm_init_dac_osc(DAC_OSC_PIN);
+
+    //inicializando botões
+    gpio_init(BUTTON_A);
+    gpio_set_dir(BUTTON_A, GPIO_IN);
+    gpio_pull_up(BUTTON_A);
+
+    gpio_init(BUTTON_B);
+    gpio_set_dir(BUTTON_B, GPIO_IN);
+    gpio_pull_up(BUTTON_B);
+
+    //inicializando pinos de saída para o FPGA
+    gpio_init(PIN_16);
+    gpio_set_dir(PIN_16, GPIO_OUT);
+    gpio_put(PIN_16, 0);
+
+    gpio_init(PIN_18);
+    gpio_set_dir(PIN_18, GPIO_OUT);
+    gpio_put(PIN_18, 0);
+
+    gpio_init(led_v);
+    gpio_set_dir(led_v, GPIO_OUT);
+    gpio_put(led_v, 0);
     
     // // Limpa buffer UART múltiplas vezes
     for (int clear = 0; clear < 5; clear++) {
@@ -115,6 +145,8 @@ void on_uart_rx() {
         int rv = uart_getc(UART_ID);
         if (rv < 0) break;
         uint8_t byte = (uint8_t)rv;
+        printf("uart is readble?\n");
+        printf("rv: %i\n", rv);
 
         // aguarda o primeiro header (sincroniza)
         if (!synced) {
@@ -122,6 +154,7 @@ void on_uart_rx() {
                 synced = true;
                 header_echo_received = false;
                 counter = 0;
+                printf("0x%02X\n", byte);
             }
             continue; // descarta tudo até o primeiro header
         }
@@ -135,9 +168,9 @@ void on_uart_rx() {
                 // primeiro byte não-header após a sincronização é o primeiro dado
                 header_echo_received = true;
                 pwm_set_gpio_level(DAC_OSC_PIN, byte);
-                pwm_set_gpio_level(BUZZER_PIN, byte);
+                pwm_set_gpio_level(BUZZER_PIN, byte*2);
                 synced = false;
-                printf("Byte: %i\n", byte);
+                printf("Byte: 0x%02X\n", byte);
                 // cai para armazenar este byte abaixo
             }
         }
@@ -158,7 +191,7 @@ void pwm_init_dac_osc(uint pin) {
 }
 
 void pwm_init_buzzer(uint pin) {
-    gpio_set_function(BUZZER_PIN, GPIO_FUNC_PWM);
+    gpio_set_function(pin, GPIO_FUNC_PWM);
     uint slice = pwm_gpio_to_slice_num(pin);
 
     pwm_config cfg = pwm_get_default_config();
@@ -166,16 +199,34 @@ void pwm_init_buzzer(uint pin) {
     pwm_config_set_clkdiv(&cfg, PWM_CLKDIV);
     pwm_init(slice, &cfg, false);
 
-    pwm_set_gpio_level(BUZZER_PIN, PWM_WRAP / 2);
+    pwm_set_gpio_level(pin, PWM_WRAP / 2);
     pwm_set_enabled(slice, true);
+
 }
 
 static bool sample_timer_cb(repeating_timer_t *rt) {
     uint8_t level = sine_table[s_index];
     s_index++;
     if (s_index >= SAMPLES_PER_CYCLE) s_index = 0;
-    on_uart_tx(level);
+    on_uart_tx(250);
+    // printf("value: %i\n", level);
+    select_filter();
+
     return true; // continue recorrente
+}
+
+void select_filter(){
+    if(!gpio_get(BUTTON_A)){
+        gpio_put(PIN_18, 0);
+        gpio_put(PIN_16, 1);
+        gpio_put(led_v, 1);
+    }
+    if(!gpio_get(BUTTON_B)){
+        gpio_put(PIN_16, 0);
+        gpio_put(PIN_18, 1);
+        gpio_put(led_v, 0);
+    }
+    return;
 }
 
 

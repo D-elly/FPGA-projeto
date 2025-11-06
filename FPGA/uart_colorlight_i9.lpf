@@ -24,6 +24,15 @@ FREQUENCY PORT "clk_50mhz" 25.0 MHz;
 LOCATE COMP "reset_n" SITE "D1";
 IOBUF  PORT "reset_n" IO_TYPE=LVCMOS33 PULLMODE=UP;
 
+#ativa filtro 1, hard clipping
+LOCATE COMP "botao_a" SITE "E2";
+IOBUF  PORT "botao_a" IO_TYPE=LVCMOS33 PULLMODE=UP;
+
+#ativa filtro 2, 
+LOCATE COMP "botao_b" SITE "B1";
+IOBUF  PORT "botao_b" IO_TYPE=LVCMOS33 PULLMODE=UP;
+
+
 # ============================================================
 # UART - Comunicação com Raspberry Pi Pico
 # ============================================================

@@ -2,10 +2,32 @@ module uart_echo_colorlight_i9 (
     input  logic       clk_50mhz,
     input  logic       reset_n,
     input  logic       uart_rx,
-    output logic       uart_tx
-);
+    output logic       uart_tx,
 
-    // `define TESTE_TX_MANUAL
+    //interface escolha dos efeitos
+    input logic     botao_a,  //representa hard clipping
+    input logic     botao_b
+);
+logic [7:0] filter_select;
+logic [7:0] clipping_byte;
+logic [7:0] bitcrusher_out;
+
+always_comb begin
+    if(botao_a)begin
+        filter_select = clipping_byte;
+
+    end else if(botao_b) begin
+        filter_select = bitcrusher_out;
+
+    end else begin
+        // Usa byte filtrado para reduzir ruído
+        filter_select = rx_byte;
+    end 
+end
+
+
+    // Comentado para usar modo echo em vez de teste manual
+    //`define TESTE_TX_MANUAL
     
     logic [7:0] reset_counter = 8'd0;
     logic reset_n_internal = 1'b0;
@@ -19,14 +41,14 @@ module uart_echo_colorlight_i9 (
         end
     end
 
-    logic       rx_dv;
-    logic [7:0] rx_byte;
+    logic       rx_dv, rx_filtered_dv;
+    logic [7:0] rx_byte, rx_filtered_byte;
     logic       tx_dv;
     logic [7:0] tx_byte;
     logic       tx_active, tx_done;
     
     uart_top #(
-        .CLK_FREQ_HZ(25_000_000),
+        .CLK_FREQ_HZ(50_000_000),
         .BAUD_RATE(115200)
     ) uart_inst (
         .i_clk(clk_50mhz),
@@ -38,13 +60,25 @@ module uart_echo_colorlight_i9 (
         .o_tx_active(tx_active),
         .o_tx_done(tx_done),
         .o_rx_dv(rx_dv),
-        .o_rx_byte(rx_byte)
+        .o_rx_byte(rx_byte),
+        .o_rx_filtered_dv(rx_filtered_dv),
+        .o_rx_filtered_byte(rx_filtered_byte)
+    );
+
+    eff_1 #(
+        .CLK_FREQ(50_000_000)
+    ) eff_1_inst( 
+        .i_clk(clk_50mhz),     
+        .i_rst_n(reset_n),      
+        .receive_byte(rx_byte),   
+        .clipping_byte(clipping_byte)   
     );
     
 `ifdef TESTE_TX_MANUAL
     logic [31:0] timer_counter;
     logic [7:0]  test_char;
-    localparam TIMER_500MS = 25_000_000 / 2;
+    // 50 MHz clock -> 0.5s = 50_000_000 / 2 cycles
+    localparam TIMER_500MS = 50_000_000 / 2;
     
     always_ff @(posedge clk_50mhz or negedge reset_n_internal) begin
         if (!reset_n_internal) begin
@@ -89,8 +123,8 @@ module uart_echo_colorlight_i9 (
     // logic       rx_fifo_empty;
     logic       header_received;
     
-    assign rx_fifo_empty = (rx_fifo_wr_ptr == rx_fifo_rd_ptr);
-    assign next_wr_ptr = rx_fifo_wr_ptr + 3'b001;
+    //assign rx_fifo_empty = (rx_fifo_wr_ptr == rx_fifo_rd_ptr);
+    //assign next_wr_ptr = rx_fifo_wr_ptr + 3'b001;
 
     always_ff @(posedge clk_50mhz or negedge reset_n_internal) begin
         if (!reset_n_internal) begin
@@ -117,7 +151,7 @@ module uart_echo_colorlight_i9 (
                     if (rx_dv) begin
                         if (!tx_active) begin
                             tx_dv <= 1'b1;
-                            tx_byte <= rx_byte;
+                            tx_byte <= filter_select;
                         end
                         // se tx_active == 1, descartamos o byte (simplicidade)
                     end

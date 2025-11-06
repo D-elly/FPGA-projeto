@@ -1,110 +1,137 @@
-// uart_top.sv
-// UART Top-Level Module - SystemVerilog
-// Integração completa para comunicação FPGA <-> Raspberry Pi Pico
-//
-// Este módulo integra transmissor e receptor UART para comunicação bidirecional
-// Configuração: 115200 baud, 8N1, 50 MHz clock
-//
-// Conexões com Raspberry Pi Pico:
-//   FPGA TX -> Pico RX (GP1 ou outro pino UART)
-//   FPGA RX <- Pico TX (GP0 ou outro pino UART)
-//   GND     -> GND (compartilhado)
-// Inclui lpf digital para suavizar bytes recebidos
-
 module uart_top #(
-    parameter CLK_FREQ_HZ = 50_000_000,
-    parameter BAUD_RATE   = 115200
+    parameter CLK_FREQ_HZ = 50_000_000,  // Clock do sistema
+    parameter BAUD_RATE   = 115200        // Taxa de transmissão
 ) (
-    input  logic       i_clk,
-    input  logic       i_rst_n,
+    // Sinais do sistema
+    input  logic       i_clk,          // Clock 50 MHz
+    input  logic       i_rst_n,        // Reset assíncrono ativo baixo
+    
+    // Interface UART física (conectar ao Raspberry Pi Pico)
+    input  logic       i_uart_rx,      // Recebe do Pico TX
+    output logic       o_uart_tx,      // Envia para Pico RX
 
-    // Interface UART física
-    input  logic       i_uart_rx,
-    output logic       o_uart_tx,
-
-    // Interface de transmissão
-    input  logic       i_tx_dv,
-    input  logic [7:0] i_tx_byte,
-    output logic       o_tx_active,
-    output logic       o_tx_done,
-
-    // Interface de recepção original
-    output logic       o_rx_dv,
-    output logic [7:0] o_rx_byte,
-
-    // Interface de recepção filtrada (nova)
-    output logic       o_rx_filtered_dv,
-    output logic [7:0] o_rx_filtered_byte
+    //seletores de efeito
+    input logic botao_a, 
+    input logic botao_b
 );
 
+    // Calcula CLKS_PER_BIT
     localparam int CLKS_PER_BIT = CLK_FREQ_HZ / BAUD_RATE;
 
-    // Transmissor UART
+    logic [7:0] reset_counter = 8'd0;
+    logic reset_n_internal = 1'b0; // Começa em reset
+    
+    always_ff @(posedge i_clk or negedge i_rst_n) begin 
+        if (!i_rst_n) begin // Reset físico
+            reset_counter <= 8'd0;
+            reset_n_internal <= 1'b0;
+        end else if (reset_counter < 8'd255) begin
+            reset_counter <= reset_counter + 1'b1;
+            reset_n_internal <= 1'b0; // Mantém em reset
+        end else begin
+            reset_n_internal <= 1'b1; // Libera o reset
+        end
+    end
+
+    //conexões com módulos filhos
+    logic       rx_dv;       // data_ready
+    logic [7:0] rx_byte;     // byte de dado recebido
+    
+    logic       tx_dv;       // data ready para iniciar tx function
+    logic [7:0] tx_byte;     // byte para enviar no tx
+    logic       tx_active;   // flag para tx funcionando
+
+    //Fios Internos p/ Efeitos
+    logic [7:0] clipping_out;   
+    logic [7:0] bitcrusher_out; 
+    logic [7:0] filter_select; 
+    
+    // Instancia transmissor UART
     uart_tx #(
         .CLKS_PER_BIT(CLKS_PER_BIT)
     ) uart_tx_inst (
         .i_clk       (i_clk),
-        .i_rst_n     (i_rst_n),
-        .i_tx_dv     (i_tx_dv),
-        .i_tx_byte   (i_tx_byte),
+        .i_rst_n     (reset_n_internal),
+        .i_tx_dv     (tx_dv),
+        .i_tx_byte   (tx_byte),
         .o_tx_serial (o_uart_tx),
-        .o_tx_active (o_tx_active),
-        .o_tx_done   (o_tx_done)
+        .o_tx_active (tx_active)
+       // .o_tx_done   (o_tx_done) não está sendo usado
     );
-
-    // Receptor UART
+    
+    // Instancia receptor UART
     uart_rx #(
         .CLKS_PER_BIT(CLKS_PER_BIT)
     ) uart_rx_inst (
         .i_clk       (i_clk),
-        .i_rst_n     (i_rst_n),
+        .i_rst_n     (reset_n_internal),
         .i_rx_serial (i_uart_rx),
-        .o_rx_dv     (o_rx_dv),
-        .o_rx_byte   (o_rx_byte)
+        .o_rx_dv     (rx_dv),
+        .o_rx_byte   (rx_byte)
     );
 
-    // Filtro passa-baixa digital
-    lpf_byte #(
-        .ALPHA_SHIFT(3)  // α = 1/8
-    ) lpf_inst (
-        .i_clk      (i_clk),
-        .i_rst_n    (i_rst_n),
-        .i_valid    (o_rx_dv),
-        .i_data     (o_rx_byte),
-        .o_filtered (o_rx_filtered_byte),
-        .o_valid    (o_rx_filtered_dv)
+    eff_1 #(
+    .CLK_FREQ(CLK_FREQ_HZ)
+    ) eff_1_inst ( 
+        .i_clk(i_clk),         
+        .i_rst_n(reset_n_internal),  
+        .data_valid(rx_dv),    
+        .receive_byte(rx_byte),     
+        .clipping_byte(clipping_out)   
     );
 
-endmodule
+    //efeito de bitcrusher pode ser feito no mesmo módulo caso 
+    //não inclua mudanças na taxa de amostragem, apenas em depth
+    assign bitcrusher_out = {rx_byte[7:4], 4'b0000};
 
-// Módulo LPF simples para bytes UART
-module lpf_byte #(
-    parameter ALPHA_SHIFT = 3
-)(
-    input  logic        i_clk,
-    input  logic        i_rst_n,
-    input  logic        i_valid,
-    input  logic [7:0]  i_data,
-    output logic [7:0]  o_filtered,
-    output logic        o_valid
-);
+    //multiplexador de efeitos
+    always_comb begin
+        if(botao_a)begin
+            filter_select = clipping_out;
 
-    logic [10:0] acc;
-    logic        valid_d;
+        end else if(botao_b) begin
+            filter_select = bitcrusher_out;
 
-    always_ff @(posedge i_clk or negedge i_rst_n) begin
-        if (!i_rst_n) begin
-            acc      <= 0;
-            valid_d  <= 0;
-        end else if (i_valid) begin
-            acc     <= acc + (i_data - acc[10:3]);
-            valid_d <= 1;
         end else begin
-            valid_d <= 0;
+            filter_select = rx_byte;
+        end 
+    end
+
+    //Máquina de estados para controle de UART
+    typedef enum logic [1:0]{
+        S_IDLE, 
+        S_SEND 
+    } state_t;
+
+    state_t echo_state;
+
+    always_ff @(posedge i_clk or negedge reset_n_internal) begin
+        if (!reset_n_internal) begin
+            echo_state <= S_IDLE;
+            tx_dv <= 1'b0;
+            tx_byte <= 8'h00;
+        end else begin
+            tx_dv <= 1'b0; // O pulso 'tx_dv' dura apenas 1 ciclo
+            
+            case (echo_state)
+                S_IDLE: begin
+                    // Se um byte chegou (rx_dv=1) E o TX está livre (!tx_active)
+                    if (rx_dv && !tx_active) begin
+                        tx_byte <= filter_select; // Carrega o byte do MUX
+                        tx_dv <= 1'b1;            // Inicia o envio
+                        echo_state <= S_SEND;
+                    end
+                end 
+                
+                S_SEND: begin
+                    // Volta para IDLE no próximo ciclo
+                    echo_state <= S_IDLE;
+                end
+                
+                default: echo_state <= S_IDLE;
+            endcase
         end
     end
 
-    assign o_filtered = acc[10:3];
-    assign o_valid    = valid_d;
 
 endmodule
