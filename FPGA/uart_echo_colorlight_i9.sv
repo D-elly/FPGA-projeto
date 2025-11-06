@@ -41,8 +41,8 @@ end
         end
     end
 
-    logic       rx_dv, rx_filtered_dv;
-    logic [7:0] rx_byte, rx_filtered_byte;
+    logic       rx_dv;
+    logic [7:0] rx_byte;
     logic       tx_dv;
     logic [7:0] tx_byte;
     logic       tx_active, tx_done;
@@ -60,16 +60,15 @@ end
         .o_tx_active(tx_active),
         .o_tx_done(tx_done),
         .o_rx_dv(rx_dv),
-        .o_rx_byte(rx_byte),
-        .o_rx_filtered_dv(rx_filtered_dv),
-        .o_rx_filtered_byte(rx_filtered_byte)
+        .o_rx_byte(rx_byte)
     );
 
     eff_1 #(
         .CLK_FREQ(50_000_000)
     ) eff_1_inst( 
         .i_clk(clk_50mhz),     
-        .i_rst_n(reset_n),      
+        .i_rst_n(reset_n_internal),
+        .data_valid(rx_dv),
         .receive_byte(rx_byte),   
         .clipping_byte(clipping_byte)   
     );
@@ -106,56 +105,68 @@ end
     end
     
 `else
-    // ECHO COM HEADER DE SINCRONIZAÇÃO
+    // ECHO COM HEADER DE SINCRONIZAÇÃO (baseado no código Hough funcionando)
     localparam HEADER_BYTE = 8'hAA;
     
     typedef enum logic [1:0] {
         WAIT_HEADER,
-        ECHO_DATA
+        ECHO_DATA,
+        WAIT_TX_DONE
     } state_t;
     
     state_t state;
-    // removed rx_fifo declarations
-    // logic [7:0] rx_fifo [0:7];
-    // logic [2:0] rx_fifo_wr_ptr;
-    // logic [2:0] rx_fifo_rd_ptr;
-    // logic [2:0] next_wr_ptr;
-    // logic       rx_fifo_empty;
-    logic       header_received;
+    logic       prev_tx_done;
+    logic       tx_done_rising;
     
-    //assign rx_fifo_empty = (rx_fifo_wr_ptr == rx_fifo_rd_ptr);
-    //assign next_wr_ptr = rx_fifo_wr_ptr + 3'b001;
+    // Detecção de borda ascendente de tx_done (igual ao código Hough)
+    always_ff @(posedge clk_50mhz or negedge reset_n_internal) begin
+        if (!reset_n_internal) begin
+            prev_tx_done <= 1'b0;
+        end else begin
+            prev_tx_done <= tx_done;
+        end
+    end
+    assign tx_done_rising = tx_done && !prev_tx_done;
 
     always_ff @(posedge clk_50mhz or negedge reset_n_internal) begin
         if (!reset_n_internal) begin
             state <= WAIT_HEADER;
             tx_dv <= 1'b0;
             tx_byte <= 8'h00;
-            header_received <= 1'b0;
-            // for (int i = 0; i < 8; i++) rx_fifo[i] <= 8'h00;
         end else begin
+            // Default: limpa tx_dv (igual ao código Hough)
             tx_dv <= 1'b0;
 
             case (state)
                 WAIT_HEADER: begin
-                    // aguarda header (não armazena nem ecoa aqui)
+                    // Aguarda header de sincronização (0xAA)
                     if (rx_dv && rx_byte == HEADER_BYTE) begin
-                        header_received <= 1'b1;
                         state <= ECHO_DATA;
                     end
                 end
                 
                 ECHO_DATA: begin
-                    // Echo imediato: quando receber um byte (rx_dv),
-                    // se TX estiver livre, transmite imediatamente.
+                    // Quando receber um byte de dados (não o header)
                     if (rx_dv) begin
+                        // Envia imediatamente se TX não estiver ativo
                         if (!tx_active) begin
                             tx_dv <= 1'b1;
                             tx_byte <= filter_select;
+                            state <= WAIT_TX_DONE;
                         end
-                        // se tx_active == 1, descartamos o byte (simplicidade)
+                        // Se tx_active, aguarda na mesma posição (não descarta)
                     end
                 end
+                
+                WAIT_TX_DONE: begin
+                    // Aguarda transmissão completar (usando borda ascendente)
+                    if (tx_done_rising) begin
+                        tx_dv <= 1'b0;
+                        state <= ECHO_DATA;  // Volta para aguardar próximo dado
+                    end
+                end
+                
+                default: state <= WAIT_HEADER;
             endcase
         end
     end
