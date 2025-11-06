@@ -11,8 +11,7 @@
 # ============================================================
 # CLOCK - 25 MHz (Oscilador interno do Colorlight i9)
 # ============================================================
-# Nota: O módulo UART espera 50 MHz, então use PLL para gerar 50 MHz
-# ou ajuste CLKS_PER_BIT = 217 para 25 MHz @ 115200 baud
+# CLKS_PER_BIT = 25_000_000 / 115200 = 217 ciclos por bit
 LOCATE COMP "clk_50mhz" SITE "P3";
 IOBUF  PORT "clk_50mhz" IO_TYPE=LVCMOS33;
 FREQUENCY PORT "clk_50mhz" 25.0 MHz;
@@ -50,4 +49,4 @@ IOBUF  PORT "uart_rx" IO_TYPE=LVCMOS33 PULLMODE=UP;
 # Observação: LPF digital adicionado após uart_rx no código SystemVerilog
 # A filtragem é lógica e não altera os pinos físicos mapeados aqui
 
-SYSCONFIG CONFIG_IOVOLTAGE=3.3 COMPRESS_CONFIG=ON MCCLK_FREQ=62;=3.3 COMPRESS_CONFIG=ON MCCLK_FREQ=62;
+SYSCONFIG CONFIG_IOVOLTAGE=3.3 COMPRESS_CONFIG=ON MCCLK_FREQ=62;

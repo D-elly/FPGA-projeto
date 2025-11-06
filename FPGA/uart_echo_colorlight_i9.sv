@@ -8,30 +8,30 @@ module uart_echo_colorlight_i9 (
     input logic     botao_a,  //representa hard clipping
     input logic     botao_b
 );
-logic [7:0] filter_select;
-logic [7:0] clipping_byte;
-logic [7:0] bitcrusher_out;
-logic [7:0] data_byte;  // Armazena último byte de DADOS (não header)
+    logic [7:0] data_byte;        // Armazena último byte recebido
+    logic [7:0] filtered_byte;    // Byte após aplicar filtro
 
-// Inicializa bitcrusher_out para evitar valor X
-assign bitcrusher_out = 8'd0;  // TODO: Implementar filtro bitcrusher
+    // Lógica combinacional para aplicar filtros
+    always_comb begin
+        if (botao_a) begin
+            // Filtro de clipping (limita em 200)
+            if (data_byte > 8'd200) begin
+                filtered_byte = 8'd200;
+            end else begin
+                filtered_byte = data_byte;
+            end
+        end else if (botao_b) begin
+            // Filtro bitcrusher (reduz resolução - mantém 4 MSBs)
+            filtered_byte = {data_byte[7:4], 4'b0000};
+        end else begin
+            // Sem filtro: passa dados originais
+            filtered_byte = data_byte;
+        end
+    end
 
-always_comb begin
-    if(botao_a)begin
-        filter_select = clipping_byte;
 
-    end else if(botao_b) begin
-        filter_select = bitcrusher_out;
-
-    end else begin
-        // Usa byte de dados (não o header)
-        filter_select = data_byte;
-    end 
-end
-
-
-    // Comentado para usar modo echo em vez de teste manual
-    //`define TESTE_TX_MANUAL
+    // MODO ECHO ATIVADO (comentar para modo teste)
+    // `define TESTE_TX_MANUAL
     
     logic [7:0] reset_counter = 8'd0;
     logic reset_n_internal = 1'b0;
@@ -59,7 +59,7 @@ end
     localparam HEADER_BYTE = 8'hAA;
     
     uart_top #(
-        .CLK_FREQ_HZ(50_000_000),
+        .CLK_FREQ_HZ(25_000_000),  // CORRIGIDO: Clock real é 25 MHz!
         .BAUD_RATE(115200)
     ) uart_inst (
         .i_clk(clk_50mhz),
@@ -72,16 +72,6 @@ end
         .o_tx_done(tx_done),
         .o_rx_dv(rx_dv),
         .o_rx_byte(rx_byte)
-    );
-
-    eff_1 #(
-        .CLK_FREQ(50_000_000)
-    ) eff_1_inst( 
-        .i_clk(clk_50mhz),     
-        .i_rst_n(reset_n_internal),
-        .data_valid(rx_dv && rx_byte != HEADER_BYTE),  // Só valida dados, não header
-        .receive_byte(rx_byte),   
-        .clipping_byte(clipping_byte)   
     );
     
     typedef enum logic [1:0] {
@@ -121,6 +111,10 @@ end
         end
     end
     
+`ifndef TESTE_TX_MANUAL
+    // ========================================
+    // FSM Principal de Echo (desabilitada no modo teste)
+    // ========================================
     always_ff @(posedge clk_50mhz or negedge reset_n_internal) begin
         if (!reset_n_internal) begin
             state <= WAIT_HEADER;
@@ -152,27 +146,15 @@ end
 `endif
                             state <= WAIT_HEADER;
                         end else begin
-                            // É um dado! Transmite imediatamente
+                            // É um dado! Salva e inicia transmissão do HEADER
                             if (!tx_active) begin
-                                data_byte <= rx_byte;
+                                data_byte <= rx_byte;  // Salva para próxima vez
                                 tx_dv <= 1'b1;
+                                tx_byte <= HEADER_BYTE;  // Envia HEADER primeiro
                                 
-                                // Aplica filtro
-                                if (botao_a) begin
-                                    tx_byte <= (rx_byte > 8'd200) ? 8'd200 : rx_byte;
 `ifdef SIMULATION
-                                    $display("[FPGA %0t] TX com clipping: 0x%02h", $time, 
-                                            (rx_byte > 8'd200) ? 8'd200 : rx_byte);
+                                $display("[FPGA %0t] RX dados: 0x%02h, enviando HEADER", $time, rx_byte);
 `endif
-                                end else if (botao_b) begin
-                                    tx_byte <= 8'd0;
-                                end else begin
-                                    tx_byte <= rx_byte;
-`ifdef SIMULATION
-                                    $display("[FPGA %0t] TX sem filtro: 0x%02h", $time, rx_byte);
-`endif
-                                end
-                                
                                 state <= WAIT_TX_DONE;
                             end
                         end
@@ -180,12 +162,29 @@ end
                 end
                 
                 WAIT_TX_DONE: begin
-                    // Aguarda transmissão completar
+                    // Aguarda transmissão do HEADER completar, depois envia DADOS
                     if (tx_done_rising) begin
+                        if (tx_byte == HEADER_BYTE) begin
+                            // Acabou de enviar HEADER, agora envia DADOS com filtro
+                            tx_dv <= 1'b1;
+                            tx_byte <= filtered_byte;
+                            
 `ifdef SIMULATION
-                        $display("[FPGA %0t] TX completo! Voltando para WAIT_HEADER", $time);
+                            if (botao_a) begin
+                                $display("[FPGA %0t] TX com clipping: 0x%02h", $time, filtered_byte);
+                            end else if (botao_b) begin
+                                $display("[FPGA %0t] TX com bitcrusher: 0x%02h", $time, filtered_byte);
+                            end else begin
+                                $display("[FPGA %0t] TX sem filtro: 0x%02h", $time, filtered_byte);
+                            end
 `endif
-                        state <= WAIT_HEADER;
+                        end else begin
+                            // Acabou de enviar DADOS, volta para WAIT_HEADER
+`ifdef SIMULATION
+                            $display("[FPGA %0t] TX completo! Voltando para WAIT_HEADER", $time);
+`endif
+                            state <= WAIT_HEADER;
+                        end
                     end
                 end
                 
@@ -193,5 +192,84 @@ end
             endcase
         end
     end
+`else
+    // ========================================
+    // MODO DE TESTE: TX Manual Periódico
+    // ========================================
+    // Envia pacotes periodicamente para testar comunicação
+    
+    localparam CLKS_PER_50MS = 25_000_000 / 20;  // 50ms @ 25 MHz = 1.25M ciclos
+    
+    logic [31:0] test_counter;
+    logic [7:0]  test_value;
+    
+    typedef enum logic [2:0] {
+        TEST_IDLE,
+        TEST_SEND_HEADER,
+        TEST_WAIT_HEADER,
+        TEST_SEND_DATA,
+        TEST_WAIT_DATA
+    } test_state_t;
+    
+    test_state_t test_state;
+    
+    // Combinação de lógica de teste com FSM principal
+    always_ff @(posedge clk_50mhz or negedge reset_n_internal) begin
+        if (!reset_n_internal) begin
+            test_counter <= 0;
+            test_value <= 8'h80;  // Começa em 128
+            test_state <= TEST_IDLE;
+            tx_dv <= 1'b0;
+            tx_byte <= 8'h00;
+        end else begin
+            // Default: limpa tx_dv
+            tx_dv <= 1'b0;
+            
+            case (test_state)
+                TEST_IDLE: begin
+                    test_counter <= test_counter + 1;
+                    
+                    // A cada 50ms, envia um novo pacote
+                    if (test_counter >= CLKS_PER_50MS) begin
+                        test_counter <= 0;
+                        test_state <= TEST_SEND_HEADER;
+                    end
+                end
+                
+                TEST_SEND_HEADER: begin
+                    if (!tx_active) begin
+                        tx_dv <= 1'b1;
+                        tx_byte <= HEADER_BYTE;  // 0xAA
+                        test_state <= TEST_WAIT_HEADER;
+                    end
+                end
+                
+                TEST_WAIT_HEADER: begin
+                    if (tx_done_rising) begin
+                        test_state <= TEST_SEND_DATA;
+                    end
+                end
+                
+                TEST_SEND_DATA: begin
+                    if (!tx_active) begin
+                        tx_dv <= 1'b1;
+                        tx_byte <= test_value;
+                        test_state <= TEST_WAIT_DATA;
+                    end
+                end
+                
+                TEST_WAIT_DATA: begin
+                    if (tx_done_rising) begin
+                        // Incrementa valor de teste
+                        test_value <= test_value + 8'd10;
+                        test_state <= TEST_IDLE;
+                    end
+                end
+                
+                default: test_state <= TEST_IDLE;
+            endcase
+        end
+    end
+`endif
 
 endmodule
