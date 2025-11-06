@@ -15,156 +15,108 @@ module uart_rx #(
     input  logic       i_rst_n,      // Reset assíncrono ativo baixo
     input  logic       i_rx_serial,  // Sinal UART RX (conectar ao Pico TX)
     
-    output logic       o_rx_dv,      // Data Valid: pulso quando dado pronto
+    output logic       o_rx_dv,      // Data Valid: pulso de 1 ciclo quando dado pronto
     output logic [7:0] o_rx_byte     // Byte recebido
 );
 
-    // Estados da máquina de estados
-    typedef enum logic [2:0] {
-        IDLE         = 3'b000,
-        START_BIT    = 3'b001,
-        DATA_BITS    = 3'b010,
-        STOP_BIT     = 3'b011,
-        CLEANUP      = 3'b100,
-        WAIT_IDLE    = 3'b101  // Aguarda linha retornar a IDLE (HIGH)
+    // Estados da máquina de estados (simplificado)
+    typedef enum logic [1:0] {
+        IDLE      = 2'b00,
+        START_BIT = 2'b01,
+        DATA_BITS = 2'b10,
+        STOP_BIT  = 2'b11
     } state_t;
     
     state_t state;
     
-    // Registradores para metastabilidade (triple-flop + majority vote)
-    logic rx_data_r1, rx_data_r2, rx_data_r3;
-    logic rx_filtered;
+    // Double-flop para sincronização e proteção contra metastabilidade
+    logic rx_sync1, rx_sync2;
     
     // Registradores internos
     logic [$clog2(CLKS_PER_BIT)-1:0] clk_count;
     logic [2:0] bit_index;
-    logic [7:0] rx_byte;
-    logic rx_line_was_high;  // Flag para garantir transição HIGH->LOW válida
-    logic frame_valid;       // Flag indicando se o frame é válido
+    logic [7:0] rx_byte_reg;
     
-    // Triple-flop para evitar metastabilidade
+    // Pipeline de sincronização (2 estágios)
     always_ff @(posedge i_clk or negedge i_rst_n) begin
         if (!i_rst_n) begin
-            rx_data_r1 <= 1'b1;
-            rx_data_r2 <= 1'b1;
-            rx_data_r3 <= 1'b1;
+            rx_sync1 <= 1'b1;
+            rx_sync2 <= 1'b1;
         end else begin
-            rx_data_r1 <= i_rx_serial;
-            rx_data_r2 <= rx_data_r1;
-            rx_data_r3 <= rx_data_r2;
+            rx_sync1 <= i_rx_serial;
+            rx_sync2 <= rx_sync1;
         end
     end
     
-    // Majority vote filter (reduz ruído)
-    always_comb begin
-        rx_filtered = (rx_data_r1 & rx_data_r2) | 
-                      (rx_data_r2 & rx_data_r3) | 
-                      (rx_data_r1 & rx_data_r3);
-    end
-    
-    // Máquina de estados - Recepção UART
+    // FSM de recepção UART
     always_ff @(posedge i_clk or negedge i_rst_n) begin
         if (!i_rst_n) begin
-            state              <= IDLE;
-            o_rx_dv            <= 1'b0;
-            o_rx_byte          <= '0;
-            clk_count          <= '0;
-            bit_index          <= '0;
-            rx_byte            <= '0;
-            rx_line_was_high   <= 1'b1;
-            frame_valid        <= 1'b1;
+            state       <= IDLE;
+            o_rx_dv     <= 1'b0;
+            o_rx_byte   <= 8'h00;
+            clk_count   <= 0;
+            bit_index   <= 0;
+            rx_byte_reg <= 8'h00;
         end else begin
+            // Limpa data valid por padrão (pulso de 1 ciclo)
+            o_rx_dv <= 1'b0;
+            
             case (state)
                 IDLE: begin
-                    o_rx_dv           <= 1'b0;
-                    clk_count         <= '0;
-                    bit_index         <= '0;
-                    frame_valid       <= 1'b1;  // Assume válido até provar contrário
+                    clk_count <= 0;
+                    bit_index <= 0;
                     
-                    // Rastreia se a linha está em HIGH
-                    if (rx_filtered == 1'b1) begin
-                        rx_line_was_high <= 1'b1;
-                    end
-                    
-                    // Detecta start bit APENAS após linha ter estado em HIGH
-                    // Isso garante transição HIGH -> LOW válida
-                    if (rx_filtered == 1'b0 && rx_line_was_high) begin
+                    // Detecta start bit (transição para LOW)
+                    if (rx_sync2 == 1'b0) begin
                         state <= START_BIT;
-                        rx_line_was_high <= 1'b0;
                     end
                 end
                 
                 START_BIT: begin
                     if (clk_count < CLKS_PER_BIT - 1) begin
-                        clk_count <= clk_count + 1'b1;
-                        
-                        // VALIDAÇÃO: Checa se start bit AINDA está em LOW no MEIO
-                        if (clk_count == (CLKS_PER_BIT / 2)) begin
-                            if (rx_filtered != 1'b0) begin
-                                // Start bit inválido - marca frame como inválido
-                                frame_valid <= 1'b0;
-                            end
-                        end
+                        clk_count <= clk_count + 1;
                     end else begin
-                        clk_count <= '0;
-                        // SEMPRE vai para DATA_BITS, mesmo se start bit foi inválido
+                        // Terminou período do start bit
+                        clk_count <= 0;
                         state <= DATA_BITS;
                     end
                 end
                 
                 DATA_BITS: begin
                     if (clk_count < CLKS_PER_BIT - 1) begin
-                        clk_count <= clk_count + 1'b1;
+                        clk_count <= clk_count + 1;
                         
-                        // AMOSTRA LIGEIRAMENTE ANTES DO MEIO (compensação de delay)
-                        // Em vez de CLKS_PER_BIT/2, usa (CLKS_PER_BIT/2 - 4)
-                        if (clk_count == ((CLKS_PER_BIT / 2) - 4)) begin
-                            rx_byte[bit_index] <= rx_filtered;
+                        // Amostra no MEIO do bit (ciclo 217)
+                        if (clk_count == (CLKS_PER_BIT / 2)) begin
+                            rx_byte_reg[bit_index] <= rx_sync2;
                         end
                     end else begin
-                        clk_count <= '0;
+                        // Terminou período do bit atual
+                        clk_count <= 0;
                         
                         if (bit_index < 7) begin
-                            bit_index <= bit_index + 1'b1;
+                            // Próximo bit de dados
+                            bit_index <= bit_index + 1;
                         end else begin
-                            bit_index <= '0;
-                            state     <= STOP_BIT;
+                            // Todos os 8 bits recebidos
+                            state <= STOP_BIT;
                         end
                     end
                 end
                 
                 STOP_BIT: begin
-                    // CORREÇÃO: Limpa o_rx_dv imediatamente após pulso
-                    if (o_rx_dv == 1'b1) begin
-                        o_rx_dv <= 1'b0;
-                    end
-                    
                     if (clk_count < CLKS_PER_BIT - 1) begin
-                        clk_count <= clk_count + 1'b1;
+                        clk_count <= clk_count + 1;
                         
-                        // VALIDAÇÃO: Checa stop bit no meio do período
+                        // No meio do stop bit, valida e envia dados
                         if (clk_count == (CLKS_PER_BIT / 2)) begin
-                            // Só aceita se frame_valid E stop bit correto
-                            if (frame_valid && rx_filtered == 1'b1) begin
-                                // Frame completo e válido - PULSO DE 1 CICLO
-                                o_rx_dv   <= 1'b1;
-                                o_rx_byte <= rx_byte;
-                            end
+                            // Gera pulso de data valid
+                            o_rx_dv   <= 1'b1;
+                            o_rx_byte <= rx_byte_reg;
                         end
                     end else begin
-                        clk_count <= '0;
-                        state     <= CLEANUP;
-                    end
-                end
-                
-                CLEANUP: begin
-                    state   <= WAIT_IDLE;
-                    o_rx_dv <= 1'b0;  // Garante que está limpo
-                end
-                
-                WAIT_IDLE: begin
-                    // Aguarda linha voltar a HIGH (idle) antes de aceitar novo start bit
-                    if (rx_filtered == 1'b1) begin
+                        // Terminou stop bit, volta para IDLE
+                        clk_count <= 0;
                         state <= IDLE;
                     end
                 end

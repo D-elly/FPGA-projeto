@@ -8,26 +8,30 @@ module uart_echo_colorlight_i9 (
     input logic     botao_a,  //representa hard clipping
     input logic     botao_b
 );
-logic [7:0] filter_select;
-logic [7:0] clipping_byte;
-logic [7:0] bitcrusher_out;
+    logic [7:0] data_byte;        // Armazena último byte recebido
+    logic [7:0] filtered_byte;    // Byte após aplicar filtro
 
-always_comb begin
-    if(botao_a)begin
-        filter_select = clipping_byte;
+    // Lógica combinacional para aplicar filtros
+    always_comb begin
+        if (botao_a) begin
+            // Filtro de clipping (limita em 200)
+            if (data_byte > 8'd200) begin
+                filtered_byte = 8'd200;
+            end else begin
+                filtered_byte = data_byte;
+            end
+        end else if (botao_b) begin
+            // Filtro bitcrusher (reduz resolução - mantém 4 MSBs)
+            filtered_byte = {data_byte[7:4], 4'b0000};
+        end else begin
+            // Sem filtro: passa dados originais
+            filtered_byte = data_byte;
+        end
+    end
 
-    end else if(botao_b) begin
-        filter_select = bitcrusher_out;
 
-    end else begin
-        // Usa byte filtrado para reduzir ruído
-        filter_select = rx_byte;
-    end 
-end
-
-
-    // Comentado para usar modo echo em vez de teste manual
-    //`define TESTE_TX_MANUAL
+    // MODO ECHO ATIVADO (comentar para modo teste)
+    // `define TESTE_TX_MANUAL
     
     logic [7:0] reset_counter = 8'd0;
     logic reset_n_internal = 1'b0;
@@ -41,14 +45,21 @@ end
         end
     end
 
-    logic       rx_dv, rx_filtered_dv;
-    logic [7:0] rx_byte, rx_filtered_byte;
+    logic       rx_dv;
+    logic [7:0] rx_byte;
     logic       tx_dv;
     logic [7:0] tx_byte;
     logic       tx_active, tx_done;
     
+    // Captura rx_dv e rx_byte para evitar problemas de delta-cycle
+    logic rx_dv_reg, rx_dv_reg2;
+    logic [7:0] rx_byte_reg, rx_byte_reg2;
+    
+    // ECHO COM HEADER DE SINCRONIZAÇÃO (baseado no código Hough funcionando)
+    localparam HEADER_BYTE = 8'hAA;
+    
     uart_top #(
-        .CLK_FREQ_HZ(50_000_000),
+        .CLK_FREQ_HZ(25_000_000),  // CORRIGIDO: Clock real é 25 MHz!
         .BAUD_RATE(115200)
     ) uart_inst (
         .i_clk(clk_50mhz),
@@ -60,102 +71,202 @@ end
         .o_tx_active(tx_active),
         .o_tx_done(tx_done),
         .o_rx_dv(rx_dv),
-        .o_rx_byte(rx_byte),
-        .o_rx_filtered_dv(rx_filtered_dv),
-        .o_rx_filtered_byte(rx_filtered_byte)
+        .o_rx_byte(rx_byte)
     );
-
-    eff_1 #(
-        .CLK_FREQ(50_000_000)
-    ) eff_1_inst( 
-        .i_clk(clk_50mhz),     
-        .i_rst_n(reset_n),      
-        .receive_byte(rx_byte),   
-        .clipping_byte(clipping_byte)   
-    );
-    
-`ifdef TESTE_TX_MANUAL
-    logic [31:0] timer_counter;
-    logic [7:0]  test_char;
-    // 50 MHz clock -> 0.5s = 50_000_000 / 2 cycles
-    localparam TIMER_500MS = 50_000_000 / 2;
-    
-    always_ff @(posedge clk_50mhz or negedge reset_n_internal) begin
-        if (!reset_n_internal) begin
-            timer_counter <= 32'd0;
-            test_char <= 8'd65;
-            tx_dv <= 1'b0;
-            tx_byte <= 8'h00;
-        end else begin
-            tx_dv <= 1'b0;
-            if (timer_counter < TIMER_500MS) begin
-                timer_counter <= timer_counter + 1'b1;
-            end else begin
-                timer_counter <= 32'd0;
-                if (!tx_active) begin
-                    tx_dv <= 1'b1;
-                    tx_byte <= test_char;
-                    if (test_char < 8'd90) begin
-                        test_char <= test_char + 1'b1;
-                    end else begin
-                        test_char <= 8'd65;
-                    end
-                end
-            end
-        end
-    end
-    
-`else
-    // ECHO COM HEADER DE SINCRONIZAÇÃO
-    localparam HEADER_BYTE = 8'hAA;
     
     typedef enum logic [1:0] {
         WAIT_HEADER,
-        ECHO_DATA
+        ECHO_DATA,
+        WAIT_TX_DONE
     } state_t;
     
     state_t state;
-    // removed rx_fifo declarations
-    // logic [7:0] rx_fifo [0:7];
-    // logic [2:0] rx_fifo_wr_ptr;
-    // logic [2:0] rx_fifo_rd_ptr;
-    // logic [2:0] next_wr_ptr;
-    // logic       rx_fifo_empty;
-    logic       header_received;
+    logic       prev_tx_done;
+    logic       tx_done_rising;
     
-    //assign rx_fifo_empty = (rx_fifo_wr_ptr == rx_fifo_rd_ptr);
-    //assign next_wr_ptr = rx_fifo_wr_ptr + 3'b001;
+    // Detecção de borda ascendente de tx_done (igual ao código Hough)
+    always_ff @(posedge clk_50mhz or negedge reset_n_internal) begin
+        if (!reset_n_internal) begin
+            prev_tx_done <= 1'b0;
+        end else begin
+            prev_tx_done <= tx_done;
+        end
+    end
+    assign tx_done_rising = tx_done && !prev_tx_done;
 
+    // Duplo registrador para capturar rx_dv/rx_byte (evita race conditions)
+    always_ff @(posedge clk_50mhz or negedge reset_n_internal) begin
+        if (!reset_n_internal) begin
+            rx_dv_reg <= 1'b0;
+            rx_byte_reg <= 8'h00;
+            rx_dv_reg2 <= 1'b0;
+            rx_byte_reg2 <= 8'h00;
+        end else begin
+            // Stage 1
+            rx_dv_reg <= rx_dv;
+            rx_byte_reg <= rx_byte;
+            // Stage 2 (FSM vai ler este)
+            rx_dv_reg2 <= rx_dv_reg;
+            rx_byte_reg2 <= rx_byte_reg;
+        end
+    end
+    
+`ifndef TESTE_TX_MANUAL
+    // ========================================
+    // FSM Principal de Echo (desabilitada no modo teste)
+    // ========================================
     always_ff @(posedge clk_50mhz or negedge reset_n_internal) begin
         if (!reset_n_internal) begin
             state <= WAIT_HEADER;
             tx_dv <= 1'b0;
             tx_byte <= 8'h00;
-            header_received <= 1'b0;
-            // for (int i = 0; i < 8; i++) rx_fifo[i] <= 8'h00;
+            data_byte <= 8'h00;
         end else begin
+            // Default: limpa tx_dv (igual ao código Hough)
             tx_dv <= 1'b0;
 
             case (state)
                 WAIT_HEADER: begin
-                    // aguarda header (não armazena nem ecoa aqui)
-                    if (rx_dv && rx_byte == HEADER_BYTE) begin
-                        header_received <= 1'b1;
+                    // Aguarda header de sincronização (0xAA)
+                    if (rx_dv && (rx_byte == HEADER_BYTE)) begin
                         state <= ECHO_DATA;
                     end
                 end
                 
                 ECHO_DATA: begin
-                    // Echo imediato: quando receber um byte (rx_dv),
-                    // se TX estiver livre, transmite imediatamente.
+                    // Aguarda próximo byte (o dado após o header) - USA SINAIS DIRETOS!
                     if (rx_dv) begin
-                        if (!tx_active) begin
-                            tx_dv <= 1'b1;
-                            tx_byte <= filter_select;
+`ifdef SIMULATION
+                        $display("[FPGA %0t] ECHO_DATA: Recebeu byte 0x%02h", $realtime, rx_byte);
+`endif
+                        if (rx_byte == HEADER_BYTE) begin
+                            // Recebeu outro header, volta para WAIT_HEADER
+`ifdef SIMULATION
+                            $display("[FPGA %0t] Novo header detectado, voltando para WAIT_HEADER", $realtime);
+`endif
+                            state <= WAIT_HEADER;
+                        end else begin
+                            // É um dado! Salva e inicia transmissão do HEADER
+                            if (!tx_active) begin
+                                data_byte <= rx_byte;  // Salva para próxima vez
+                                tx_dv <= 1'b1;
+                                tx_byte <= HEADER_BYTE;  // Envia HEADER primeiro
+                                
+`ifdef SIMULATION
+                                $display("[FPGA %0t] RX dados: 0x%02h, enviando HEADER", $time, rx_byte);
+`endif
+                                state <= WAIT_TX_DONE;
+                            end
                         end
-                        // se tx_active == 1, descartamos o byte (simplicidade)
                     end
                 end
+                
+                WAIT_TX_DONE: begin
+                    // Aguarda transmissão do HEADER completar, depois envia DADOS
+                    if (tx_done_rising) begin
+                        if (tx_byte == HEADER_BYTE) begin
+                            // Acabou de enviar HEADER, agora envia DADOS com filtro
+                            tx_dv <= 1'b1;
+                            tx_byte <= filtered_byte;
+                            
+`ifdef SIMULATION
+                            if (botao_a) begin
+                                $display("[FPGA %0t] TX com clipping: 0x%02h", $time, filtered_byte);
+                            end else if (botao_b) begin
+                                $display("[FPGA %0t] TX com bitcrusher: 0x%02h", $time, filtered_byte);
+                            end else begin
+                                $display("[FPGA %0t] TX sem filtro: 0x%02h", $time, filtered_byte);
+                            end
+`endif
+                        end else begin
+                            // Acabou de enviar DADOS, volta para WAIT_HEADER
+`ifdef SIMULATION
+                            $display("[FPGA %0t] TX completo! Voltando para WAIT_HEADER", $time);
+`endif
+                            state <= WAIT_HEADER;
+                        end
+                    end
+                end
+                
+                default: state <= WAIT_HEADER;
+            endcase
+        end
+    end
+`else
+    // ========================================
+    // MODO DE TESTE: TX Manual Periódico
+    // ========================================
+    // Envia pacotes periodicamente para testar comunicação
+    
+    localparam CLKS_PER_50MS = 25_000_000 / 20;  // 50ms @ 25 MHz = 1.25M ciclos
+    
+    logic [31:0] test_counter;
+    logic [7:0]  test_value;
+    
+    typedef enum logic [2:0] {
+        TEST_IDLE,
+        TEST_SEND_HEADER,
+        TEST_WAIT_HEADER,
+        TEST_SEND_DATA,
+        TEST_WAIT_DATA
+    } test_state_t;
+    
+    test_state_t test_state;
+    
+    // Combinação de lógica de teste com FSM principal
+    always_ff @(posedge clk_50mhz or negedge reset_n_internal) begin
+        if (!reset_n_internal) begin
+            test_counter <= 0;
+            test_value <= 8'h80;  // Começa em 128
+            test_state <= TEST_IDLE;
+            tx_dv <= 1'b0;
+            tx_byte <= 8'h00;
+        end else begin
+            // Default: limpa tx_dv
+            tx_dv <= 1'b0;
+            
+            case (test_state)
+                TEST_IDLE: begin
+                    test_counter <= test_counter + 1;
+                    
+                    // A cada 50ms, envia um novo pacote
+                    if (test_counter >= CLKS_PER_50MS) begin
+                        test_counter <= 0;
+                        test_state <= TEST_SEND_HEADER;
+                    end
+                end
+                
+                TEST_SEND_HEADER: begin
+                    if (!tx_active) begin
+                        tx_dv <= 1'b1;
+                        tx_byte <= HEADER_BYTE;  // 0xAA
+                        test_state <= TEST_WAIT_HEADER;
+                    end
+                end
+                
+                TEST_WAIT_HEADER: begin
+                    if (tx_done_rising) begin
+                        test_state <= TEST_SEND_DATA;
+                    end
+                end
+                
+                TEST_SEND_DATA: begin
+                    if (!tx_active) begin
+                        tx_dv <= 1'b1;
+                        tx_byte <= test_value;
+                        test_state <= TEST_WAIT_DATA;
+                    end
+                end
+                
+                TEST_WAIT_DATA: begin
+                    if (tx_done_rising) begin
+                        // Incrementa valor de teste
+                        test_value <= test_value + 8'd10;
+                        test_state <= TEST_IDLE;
+                    end
+                end
+                
+                default: test_state <= TEST_IDLE;
             endcase
         end
     end

@@ -19,7 +19,7 @@
 
 #define SINE_FREQ_HZ        250.0f    // Frequência alvo da senóide
 #define SAMPLES_PER_CYCLE   100       // Amostras por ciclo (→ Fs = 25 kHz)
-#define FS_HZ               (SINE_FREQ_HZ * SAMPLES_PER_CYCLE)  // 25 kHz
+#define FS_HZ               10.0f     // 10 Hz = 1 amostra a cada 100ms (LENTO para debug)
 
 #define BUTTON_A 5
 #define BUTTON_B 6
@@ -36,7 +36,7 @@
 #define PWM_CLKDIV          1.0f
 #define N_SINES (sizeof(sine_table) / sizeof(sine_table[0]))
 
-//Tabela senoidal da nota dó(255 Hz)
+//Tabela senoidal da nota dó(255 Hz) - 100 amostras
 static const uint8_t sine_table[SAMPLES_PER_CYCLE] = {
     128,136,144,153,161,169,176,183,190,196,
     202,208,213,218,222,226,229,232,234,236,
@@ -47,7 +47,7 @@ static const uint8_t sine_table[SAMPLES_PER_CYCLE] = {
     26, 23, 21, 19, 18, 17, 17, 17, 18, 19,
     21, 23, 26, 29, 33, 37, 42, 47, 53, 59,
     65, 72, 79, 86, 94,102,111,119,128,136,
-    144,153,161,169,176,183,190,196
+    144,153,161,169,176,183,190,196,202,208  // CORRIGIDO: Completados 100 elementos
 };
 
 static volatile uint32_t s_index = 0;
@@ -75,14 +75,19 @@ void select_filter();
 static bool sample_timer_cb(repeating_timer_t *rt);
 
 int main() {
-    stdio_init_all();
     stdio_usb_init();
+    
+    // CRÍTICO: Aguarda USB serial inicializar
+    sleep_ms(2000);
+    printf("\n=== SISTEMA INICIANDO ===\n");
 
     uart_init(UART_ID, BAUD_RATE);
     gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
     gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
     uart_set_format(UART_ID, 8, 1, UART_PARITY_NONE);
     uart_set_fifo_enabled(UART_ID, true);
+    
+    printf("UART configurado: %d baud\n", BAUD_RATE);
     
     // Configura o pino do buzzer e pino do osciloscópio como saída PWM
     pwm_init_buzzer(BUZZER_PIN);
@@ -110,27 +115,41 @@ int main() {
     gpio_set_dir(led_v, GPIO_OUT);
     gpio_put(led_v, 0);
     
-    // // Limpa buffer UART múltiplas vezes
+    printf("Pinos configurados\n");
+    
+    // Limpa buffer UART múltiplas vezes
     for (int clear = 0; clear < 5; clear++) {
         while (uart_is_readable(UART_ID)) uart_getc(UART_ID);
     }
     
+    printf("Buffer UART limpo\n");
+    
     counter = 0;
     synced = false;
-    header_echo_received = false;  // RESET DA FLAG
+    header_echo_received = false;
 
     int UART_IRQ = (UART_ID == uart0) ? UART0_IRQ : UART1_IRQ;
     irq_set_exclusive_handler(UART_IRQ, on_uart_rx);
     irq_set_enabled(UART_IRQ, true);
     uart_set_irq_enables(UART_ID, true, false);
     
+    printf("IRQ UART configurada\n");
+    
+    // Configura timer para envio periódico
     repeating_timer_t timer;
     double ts_us = 1e6 / FS_HZ;               // 40 us para 25 kHz
-    int64_t interval_us = (int64_t)(ts_us);  // negativo = periódico no SDK
+    int64_t interval_us = -(int64_t)(ts_us);  // NEGATIVO para timer repetitivo!
 
-    add_repeating_timer_us(interval_us, sample_timer_cb, NULL, &timer); 
+    add_repeating_timer_us(interval_us, sample_timer_cb, NULL, &timer);
+    
+    printf("Timer TX configurado: %lld us (%.1f kHz)\n", -interval_us, FS_HZ/1000.0f);
+    printf("\n=== SISTEMA BIDIRECIONAL ATIVO ===\n");
+    printf("TX: Enviando senoide 250 Hz @ 25 kHz\n");
+    printf("RX: Aguardando echo do FPGA\n\n"); 
 
-    while (1) tight_loop_contents();
+    while (1) {
+        tight_loop_contents();
+    }
 }
     
 void on_uart_tx(uint8_t sample) {
@@ -141,38 +160,25 @@ void on_uart_tx(uint8_t sample) {
 }
 
 void on_uart_rx() {
+    static uint32_t rx_count = 0;
+    
     while (uart_is_readable(UART_ID)) {
         int rv = uart_getc(UART_ID);
         if (rv < 0) break;
         uint8_t byte = (uint8_t)rv;
-        printf("uart is readble?\n");
-        printf("rv: %i\n", rv);
-
-        // aguarda o primeiro header (sincroniza)
-        if (!synced) {
-            if (byte == HEADER_BYTE) {
-                synced = true;
-                header_echo_received = false;
-                counter = 0;
-                printf("0x%02X\n", byte);
-            }
-            continue; // descarta tudo até o primeiro header
-        }
-
-        // descartamos quaisquer 0xAA adicionais (echo repetido)
-        if (!header_echo_received) {
-            if (byte == HEADER_BYTE) {
-                // pula headers repetidos
-                continue;
-            } else {
-                // primeiro byte não-header após a sincronização é o primeiro dado
-                header_echo_received = true;
-                pwm_set_gpio_level(DAC_OSC_PIN, byte);
-                pwm_set_gpio_level(BUZZER_PIN, byte*2);
-                synced = false;
-                printf("Byte: 0x%02X\n", byte);
-                // cai para armazenar este byte abaixo
-            }
+        
+        rx_count++;
+        
+        // **MODO DEBUG SIMPLIFICADO: Imprime TUDO que recebe**
+        printf("[RX#%lu] 0x%02X (%3d) ", rx_count, byte, byte);
+        
+        if (byte == HEADER_BYTE) {
+            printf("<-- HEADER\n");
+        } else {
+            printf("<-- DADO\n");
+            // Atualiza PWM com qualquer dado recebido
+            pwm_set_gpio_level(DAC_OSC_PIN, byte);
+            pwm_set_gpio_level(BUZZER_PIN, byte * 8);
         }
     }
 }
@@ -205,14 +211,28 @@ void pwm_init_buzzer(uint pin) {
 }
 
 static bool sample_timer_cb(repeating_timer_t *rt) {
+    static uint32_t tx_count = 0;
+    
+    // Pega valor da tabela senoidal
     uint8_t level = sine_table[s_index];
+    
+    // Incrementa índice (com wrap)
     s_index++;
-    if (s_index >= SAMPLES_PER_CYCLE) s_index = 0;
-    on_uart_tx(250);
-    // printf("value: %i\n", level);
+    if (s_index >= SAMPLES_PER_CYCLE) {
+        s_index = 0;
+    }
+    
+    // Envia header + dado via UART
+    on_uart_tx(level);
+    
+    // Debug: Mostra TODA transmissão (não só a cada 100)
+    tx_count++;
+    printf("[TX#%lu] HEADER(0xAA) + DATA(0x%02X=%d) | s_index=%lu/%d\n", 
+           tx_count, level, level, (unsigned long)s_index, SAMPLES_PER_CYCLE);
+    
     select_filter();
-
-    return true; // continue recorrente
+    
+    return true; // Continua repetindo
 }
 
 void select_filter(){
