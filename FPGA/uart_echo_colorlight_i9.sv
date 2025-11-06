@@ -11,6 +11,10 @@ module uart_echo_colorlight_i9 (
 logic [7:0] filter_select;
 logic [7:0] clipping_byte;
 logic [7:0] bitcrusher_out;
+logic [7:0] data_byte;  // Armazena último byte de DADOS (não header)
+
+// Inicializa bitcrusher_out para evitar valor X
+assign bitcrusher_out = 8'd0;  // TODO: Implementar filtro bitcrusher
 
 always_comb begin
     if(botao_a)begin
@@ -20,8 +24,8 @@ always_comb begin
         filter_select = bitcrusher_out;
 
     end else begin
-        // Usa byte filtrado para reduzir ruído
-        filter_select = rx_byte;
+        // Usa byte de dados (não o header)
+        filter_select = data_byte;
     end 
 end
 
@@ -47,6 +51,13 @@ end
     logic [7:0] tx_byte;
     logic       tx_active, tx_done;
     
+    // Captura rx_dv e rx_byte para evitar problemas de delta-cycle
+    logic rx_dv_reg, rx_dv_reg2;
+    logic [7:0] rx_byte_reg, rx_byte_reg2;
+    
+    // ECHO COM HEADER DE SINCRONIZAÇÃO (baseado no código Hough funcionando)
+    localparam HEADER_BYTE = 8'hAA;
+    
     uart_top #(
         .CLK_FREQ_HZ(50_000_000),
         .BAUD_RATE(115200)
@@ -68,45 +79,10 @@ end
     ) eff_1_inst( 
         .i_clk(clk_50mhz),     
         .i_rst_n(reset_n_internal),
-        .data_valid(rx_dv),
+        .data_valid(rx_dv && rx_byte != HEADER_BYTE),  // Só valida dados, não header
         .receive_byte(rx_byte),   
         .clipping_byte(clipping_byte)   
     );
-    
-`ifdef TESTE_TX_MANUAL
-    logic [31:0] timer_counter;
-    logic [7:0]  test_char;
-    // 50 MHz clock -> 0.5s = 50_000_000 / 2 cycles
-    localparam TIMER_500MS = 50_000_000 / 2;
-    
-    always_ff @(posedge clk_50mhz or negedge reset_n_internal) begin
-        if (!reset_n_internal) begin
-            timer_counter <= 32'd0;
-            test_char <= 8'd65;
-            tx_dv <= 1'b0;
-            tx_byte <= 8'h00;
-        end else begin
-            tx_dv <= 1'b0;
-            if (timer_counter < TIMER_500MS) begin
-                timer_counter <= timer_counter + 1'b1;
-            end else begin
-                timer_counter <= 32'd0;
-                if (!tx_active) begin
-                    tx_dv <= 1'b1;
-                    tx_byte <= test_char;
-                    if (test_char < 8'd90) begin
-                        test_char <= test_char + 1'b1;
-                    end else begin
-                        test_char <= 8'd65;
-                    end
-                end
-            end
-        end
-    end
-    
-`else
-    // ECHO COM HEADER DE SINCRONIZAÇÃO (baseado no código Hough funcionando)
-    localparam HEADER_BYTE = 8'hAA;
     
     typedef enum logic [1:0] {
         WAIT_HEADER,
@@ -128,11 +104,29 @@ end
     end
     assign tx_done_rising = tx_done && !prev_tx_done;
 
+    // Duplo registrador para capturar rx_dv/rx_byte (evita race conditions)
+    always_ff @(posedge clk_50mhz or negedge reset_n_internal) begin
+        if (!reset_n_internal) begin
+            rx_dv_reg <= 1'b0;
+            rx_byte_reg <= 8'h00;
+            rx_dv_reg2 <= 1'b0;
+            rx_byte_reg2 <= 8'h00;
+        end else begin
+            // Stage 1
+            rx_dv_reg <= rx_dv;
+            rx_byte_reg <= rx_byte;
+            // Stage 2 (FSM vai ler este)
+            rx_dv_reg2 <= rx_dv_reg;
+            rx_byte_reg2 <= rx_byte_reg;
+        end
+    end
+    
     always_ff @(posedge clk_50mhz or negedge reset_n_internal) begin
         if (!reset_n_internal) begin
             state <= WAIT_HEADER;
             tx_dv <= 1'b0;
             tx_byte <= 8'h00;
+            data_byte <= 8'h00;
         end else begin
             // Default: limpa tx_dv (igual ao código Hough)
             tx_dv <= 1'b0;
@@ -140,29 +134,58 @@ end
             case (state)
                 WAIT_HEADER: begin
                     // Aguarda header de sincronização (0xAA)
-                    if (rx_dv && rx_byte == HEADER_BYTE) begin
+                    if (rx_dv && (rx_byte == HEADER_BYTE)) begin
                         state <= ECHO_DATA;
                     end
                 end
                 
                 ECHO_DATA: begin
-                    // Quando receber um byte de dados (não o header)
+                    // Aguarda próximo byte (o dado após o header) - USA SINAIS DIRETOS!
                     if (rx_dv) begin
-                        // Envia imediatamente se TX não estiver ativo
-                        if (!tx_active) begin
-                            tx_dv <= 1'b1;
-                            tx_byte <= filter_select;
-                            state <= WAIT_TX_DONE;
+`ifdef SIMULATION
+                        $display("[FPGA %0t] ECHO_DATA: Recebeu byte 0x%02h", $realtime, rx_byte);
+`endif
+                        if (rx_byte == HEADER_BYTE) begin
+                            // Recebeu outro header, volta para WAIT_HEADER
+`ifdef SIMULATION
+                            $display("[FPGA %0t] Novo header detectado, voltando para WAIT_HEADER", $realtime);
+`endif
+                            state <= WAIT_HEADER;
+                        end else begin
+                            // É um dado! Transmite imediatamente
+                            if (!tx_active) begin
+                                data_byte <= rx_byte;
+                                tx_dv <= 1'b1;
+                                
+                                // Aplica filtro
+                                if (botao_a) begin
+                                    tx_byte <= (rx_byte > 8'd200) ? 8'd200 : rx_byte;
+`ifdef SIMULATION
+                                    $display("[FPGA %0t] TX com clipping: 0x%02h", $time, 
+                                            (rx_byte > 8'd200) ? 8'd200 : rx_byte);
+`endif
+                                end else if (botao_b) begin
+                                    tx_byte <= 8'd0;
+                                end else begin
+                                    tx_byte <= rx_byte;
+`ifdef SIMULATION
+                                    $display("[FPGA %0t] TX sem filtro: 0x%02h", $time, rx_byte);
+`endif
+                                end
+                                
+                                state <= WAIT_TX_DONE;
+                            end
                         end
-                        // Se tx_active, aguarda na mesma posição (não descarta)
                     end
                 end
                 
                 WAIT_TX_DONE: begin
-                    // Aguarda transmissão completar (usando borda ascendente)
+                    // Aguarda transmissão completar
                     if (tx_done_rising) begin
-                        tx_dv <= 1'b0;
-                        state <= ECHO_DATA;  // Volta para aguardar próximo dado
+`ifdef SIMULATION
+                        $display("[FPGA %0t] TX completo! Voltando para WAIT_HEADER", $time);
+`endif
+                        state <= WAIT_HEADER;
                     end
                 end
                 
@@ -170,6 +193,5 @@ end
             endcase
         end
     end
-`endif
 
 endmodule

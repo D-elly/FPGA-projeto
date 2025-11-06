@@ -5,7 +5,7 @@ echo ========================================
 
 echo.
 echo [1/2] Compilando modulos...
-iverilog -g2012 -o uart_pico_sim ^
+iverilog -g2012 -D SIMULATION -o uart_pico_sim ^
     uart_rx.sv ^
     uart_tx.sv ^
     uart_top.sv ^
