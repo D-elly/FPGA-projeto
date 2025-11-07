@@ -19,7 +19,8 @@
 
 #define SINE_FREQ_HZ        250.0f    // Frequência alvo da senóide
 #define SAMPLES_PER_CYCLE   100       // Amostras por ciclo (→ Fs = 25 kHz)
-#define FS_HZ               10.0f     // 10 Hz = 1 amostra a cada 100ms (LENTO para debug)
+#define FS_HZ               5000.0f     // 5 kHz = 1 amostra a cada 100ms (LENTO para debug)
+//#define FS_HZ               (SINE_FREQ_HZ * SAMPLES_PER_CYCLE)  // 25 kHz
 
 #define BUTTON_A 5
 #define BUTTON_B 6

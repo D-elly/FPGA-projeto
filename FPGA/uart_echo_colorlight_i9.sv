@@ -14,15 +14,15 @@ module uart_echo_colorlight_i9 (
     // Lógica combinacional para aplicar filtros
     always_comb begin
         if (botao_a) begin
-            // Filtro de clipping (limita em 200)
-            if (data_byte > 8'd200) begin
-                filtered_byte = 8'd200;
+            // Filtro de clipping (limita em 150)
+            if (data_byte > 8'd150) begin
+                filtered_byte = 8'd150;
             end else begin
                 filtered_byte = data_byte;
             end
         end else if (botao_b) begin
             // Filtro bitcrusher (reduz resolução - mantém 4 MSBs)
-            filtered_byte = {data_byte[7:4], 4'b0000};
+            filtered_byte = {data_byte[7:5], 5'b00000};
         end else begin
             // Sem filtro: passa dados originais
             filtered_byte = data_byte;
